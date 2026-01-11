@@ -71,7 +71,7 @@ class Config:
             # 获取交易日
             api = get_api(self.api)
             calendar = api.get_info("tradedays")
-            non_tradedays = calendar[not calendar.is_tradeday].index
+            non_tradedays = calendar[~calendar.is_tradeday].index
             ashare_holiday = non_tradedays[~non_tradedays.weekday.isin([5, 6])]
             return pd.offsets.CustomBusinessDay(holidays=ashare_holiday)
         elif self.calendar_type == "natural":
