@@ -407,12 +407,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/97/77/ad9e06e97448843603d41a8e0d65687606a38d38ef769ea6b5dc214f9bcb/rqdatac-3.4.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:ee4c0b01f6b2ebdbd8182fbe9b25aa3778d06dea521b8268751054eaa46d3080", size = 364682, upload-time = "2026-01-09T10:02:00.161Z" },
     { url = "https://files.pythonhosted.org/packages/f4/a4/a3ef10cbee0e469dd251079a1748a2cd44d2631d39db1a5bbbf3a706173e/rqdatac-3.4.2-cp312-cp312-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:cc1babc6299df6deaf968ad3a662a906202edab044d070be57c15ea368408dd5", size = 374332, upload-time = "2026-01-09T10:02:01.882Z" },
     { url = "https://files.pythonhosted.org/packages/66/c8/e86a7ec3868153cf853b3a6438a215a92cdc0371e64e523b4fa6ff854d96/rqdatac-3.4.2-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:a45aa6cb6130361031d5c874fcde6da7542ffbd39f955f2a130d7cd853ab1c7d", size = 376985, upload-time = "2026-01-09T10:02:03.75Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/8a/ad99a2a7a045399213ecc40ead46e3909128b59055ad6e77423c67a3b509/rqdatac-3.4.2-cp312-cp312-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ba622026287f5c574ef5f9f83366fbabc056e95365b48a7e2bb91bf49341801e", size = 374434, upload-time = "2026-01-13T01:52:50.033Z" },
     { url = "https://files.pythonhosted.org/packages/a7/90/d764863f8fc2cfffdf702aefac51fe8d41b1ee6ca415f41e17b8cc8c7dde/rqdatac-3.4.2-cp312-cp312-win_amd64.whl", hash = "sha256:9a70695363cf5d35ac0911ea34c65d1b0326ae26292ffc078ab95b7bb3c63887", size = 359784, upload-time = "2026-01-09T10:02:05.285Z" },
     { url = "https://files.pythonhosted.org/packages/95/8c/44115e4299e4239675b2c90ff92512d62bfba236efbadae62bd4f4843336/rqdatac-3.4.2-cp313-cp313-macosx_10_15_x86_64.whl", hash = "sha256:953d27b6a6e5d50a2206d7e2ed5e4b14335f2f65e40165c4d776679d8c407e03", size = 363965, upload-time = "2026-01-09T10:02:06.882Z" },
     { url = "https://files.pythonhosted.org/packages/bc/54/4e3ef3e291b0bd26b6994b873c59b86ec2bad165d00acbf5eb0c73bbbcfd/rqdatac-3.4.2-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:5bbb6f788d932614efb485134b0675b073400cda7644948f7f58c19aa38fa31e", size = 364330, upload-time = "2026-01-09T10:02:08.913Z" },
     { url = "https://files.pythonhosted.org/packages/71/c0/483571e04427462c098773064c1d5c43380dad9e76f6c6792a90543257b9/rqdatac-3.4.2-cp313-cp313-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:1b325671062c60d2c99dfa6d8001c24aa7fcf01530026c11974e6eeb92d28e64", size = 376180, upload-time = "2026-01-09T10:02:11.319Z" },
     { url = "https://files.pythonhosted.org/packages/58/3a/6e6a37994d062a629801befc669a84cadec0bf0aea20679cc6164aa35e80/rqdatac-3.4.2-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:48490e2bcb818dc7524aac95f7fcf307600f4adbfce45db4daa82b47d7ee68f0", size = 375428, upload-time = "2026-01-09T10:02:13.164Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/ca/f8deff0f6e2fac43f93230574af4cfbcbd3357360c3629c3306f44c8dd98/rqdatac-3.4.2-cp313-cp313-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:66f001dd2299407cc97bb3f1e8f385ca9a739607504f61ea0cbea0a007dfd51b", size = 376282, upload-time = "2026-01-13T01:52:52.028Z" },
     { url = "https://files.pythonhosted.org/packages/e6/96/e661354e3b4aaa03a1e0dd4c0a613c2af0f290868d33abc3bff419741904/rqdatac-3.4.2-cp313-cp313-win_amd64.whl", hash = "sha256:44d0d04d78c63628b307ac125fb4fefc3171d043b1f22232eb2d128b3e46ce48", size = 359167, upload-time = "2026-01-09T10:02:15.252Z" },
+    { url = "https://files.pythonhosted.org/packages/38/d6/32d3af29c80e8a42402abbd199510471b6461cdf71e6fa8568fb1ef9b31a/rqdatac-3.4.2-cp314-cp314-macosx_10_13_x86_64.whl", hash = "sha256:36356829eb7ba38367e53254d0dedaa238405a49d23860a50a3e2f2a6d26400a", size = 369045, upload-time = "2026-01-13T01:52:54.136Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/cb/825611cec9497632cd6d61f16d2acca48981c2ed24952d4a224202a5aa17/rqdatac-3.4.2-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:afee72261bdcc81e2c9e87bf5dc542e3def908865aba7802f675d283ef7364ca", size = 367240, upload-time = "2026-01-13T01:52:56.451Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/ee/c0bc10732800deaba139e040e4821e5015ed7726cea0216a00cb98cfede6/rqdatac-3.4.2-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:9fb487d4449583f3c90e66960651f83cb796a6f5954b3f73f960e3a8e50fd192", size = 379886, upload-time = "2026-01-13T01:52:58.606Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/f1/30526ec18c22c5f23963a9b0504325f1d846fe03700c47389f815907047f/rqdatac-3.4.2-cp314-cp314-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:aa7839d0de6433187790a5ea486b347b3dfaf0b701f77eb7120c27a9216aaa66", size = 379741, upload-time = "2026-01-13T01:53:01.617Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/ae/dda324f670b211bf433a648a00943bfb94358f71275f56eb713be0d6c312/rqdatac-3.4.2-cp314-cp314-win_amd64.whl", hash = "sha256:011163cba17dfa81f78927928e3f8eb700c7e4e0654b5e3fbe67edc12def99eb", size = 369003, upload-time = "2026-01-13T01:53:03.954Z" },
 ]
 
 [[package]]
@@ -581,7 +588,7 @@ rq = [
 
 [[package]]
 name = "xqfactor"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "statsmodels" },
