@@ -463,7 +463,9 @@ class ListedFactor(AbstractFactor):
         secuinfo = self.secuinfo.set_index("code").filter(items=codes, axis=0)
         LISTED = {}
         for date in index:
-            is_listed = (secuinfo.listed_date <= date) & (secuinfo.delisted_date > date)
+            is_listed = (secuinfo.listed_date <= date) & (
+                secuinfo.de_listed_date > date
+            )
             LISTED[date] = is_listed
         listing_df = pd.concat(LISTED, axis=1).T.reindex(columns=codes, index=index)
         listing_df.columns.name = "code"
