@@ -110,7 +110,6 @@ class AbstractFactor:
         self.config = config
         return self
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)) -> pd.DataFrame:
         raise NotImplementedError
 
@@ -119,44 +118,71 @@ class AbstractFactor:
         return self._compute(config=self.config)
 
 
-class LeafFactor(AbstractFactor):
+class BaseLeaf(AbstractFactor):
     def __init__(self, name, api="default"):
         self.name = name
         self.api = api
 
-    @lru_cache(maxsize=8)
-    def _compute(self, config: Config, refs: Tuple = (0, 0)):
+    def _get_index(self, config: Config, refs: Tuple = (0, 0)):
         start_time: pd.Timestamp = config.get_option("start_time")
         end_time: pd.Timestamp = config.get_option("end_time")
-        frequency: str = config.get_option("frequency")
         codes: Tuple[str] = config.get_option("universe")
         index: pd.DatetimeIndex = config.get_option("index")
         if start_time in index:
             start_loc = index.get_loc(start_time) - refs[0]
         else:
             start_loc = index.get_loc(index.asof(start_time)) - refs[0] + 1
-        query_start_time = index[start_loc - 1]
         if end_time in index:
             end_loc = index.get_loc(end_time) + refs[1]
         else:
             end_loc = index.get_loc(index.asof(end_time)) + refs[1]
-        query_end_time = index[end_loc]
         index = index[start_loc : end_loc + 1]
+        return index, codes
 
+    @staticmethod
+    def _tick_resample(data: pd.DataFrame, tick_freq: float):
+        data = data.reset_index()
+        data["has_newer"] = data.duplicated(subset=["datetime", "code"], keep="last")
+        data.loc[data["has_newer"], "datetime"] = data.loc[
+            data["has_newer"], "datetime"
+        ] - pd.Timedelta(seconds=0.5)
+        data = (
+            data.drop(columns="has_newer")
+            .set_index(["datetime", "code"])["value"]
+            .unstack(-1)
+        )
+        data = data.resample(f"{tick_freq}s", closed="right", label="right").last()
+        return data
+
+    @staticmethod
+    @lru_cache(maxsize=512)
+    def _get_data(name: str, api: str, config: Config) -> pd.DataFrame:
+        codes: Tuple[str] = config.get_option("universe")
+        index: pd.DatetimeIndex = config.get_option("index")
+        query_start_time = index[0]
+        query_end_time = index[-1]
+        frequency: str = config.get_option("frequency")
         if frequency in ("W", "ME"):
             query_frequency = "D"
         else:
             query_frequency = frequency
-
-        api = get_api(self.api)
-        data = api.get_factor(
-            factors=self.name,
+        dataapi = get_api(api)
+        data = dataapi.get_factor(
+            factors=name,
             codes=codes,
             start_time=query_start_time,
             end_time=query_end_time,
             frequency=query_frequency,
             panel=False,
         )
+        return data
+
+
+class LeafFactor(BaseLeaf):
+    def _compute(self, config: Config, refs: Tuple = (0, 0)):
+        index, codes = self._get_index(config, refs)
+        frequency: str = config.get_option("frequency")
+        data = self._get_data(self.name, self.api, config)
         if data.empty:
             warn(f"Factor {self.name} is empty")
             data = pd.DataFrame(index=index, columns=codes)
@@ -166,21 +192,8 @@ class LeafFactor(AbstractFactor):
 
         data = data["value"]
         if frequency == "tick":
-            data = data.reset_index()
-            data["has_newer"] = data.duplicated(
-                subset=["datetime", "code"], keep="last"
-            )
-            data.loc[data["has_newer"], "datetime"] = data.loc[
-                data["has_newer"], "datetime"
-            ] - pd.Timedelta(seconds=0.5)
-            data = (
-                data.drop(columns="has_newer")
-                .set_index(["datetime", "code"])["value"]
-                .unstack(-1)
-            )
-            data = data.resample(
-                f"{config.tick_freq}s", closed="right", label="right"
-            ).last()
+            tick_freq: float = config.get_option("tick_freq")
+            data = self._tick_resample(data, tick_freq)
         else:
             data = data.unstack(level=-1)
         return data.reindex(columns=codes, index=index)
@@ -193,7 +206,6 @@ class UnaryCombinedFactor(AbstractFactor):
         self._args = args
         self._extra_kwargs = extra_kwargs
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)):
         value = self._factor._compute(config, refs)
         return self._func(value, *self._args, **self._extra_kwargs)
@@ -214,7 +226,6 @@ class BinaryCombinedFactor(AbstractFactor):
         self._extra_args = extra_args
         self._extra_kwargs = extra_kwargs
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)):
         return self._func(
             self._arg1._compute(config, refs),
@@ -235,7 +246,6 @@ class CombinedFactor(AbstractFactor):
         self._factors = factors
         self._extra_kwargs = extra_kwargs
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)):
         return self._func(
             *[factor._compute(config, refs) for factor in self._factors],
@@ -248,7 +258,6 @@ class RefFactor(AbstractFactor):
         self._factor = factor
         self._n = n
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)):
         left_ref, right_ref = refs
         if self._n > 0:
@@ -275,7 +284,6 @@ class RollingWindowFactor(AbstractFactor):
         self._window = window
         self._factor = factor
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)):
         left_ref, right_ref = refs
         left_ref += self._window
@@ -288,12 +296,11 @@ class ConstantFactor(AbstractFactor):
     def __init__(self, value):
         self._value = value
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)):
         return self._value
 
 
-class SingleLeafFactor(LeafFactor):
+class SingleLeafFactor(BaseLeaf):
     """
     返回一个指定标的时序，映射到universe上
     所有标的在界面上的值都是相同的，通常适用于业绩基准的场景
@@ -306,7 +313,6 @@ class SingleLeafFactor(LeafFactor):
             raise ValueError("code must be str")
         self.code = code
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)):
         start_time: pd.Timestamp = config.get_option("start_time")
         end_time: pd.Timestamp = config.get_option("end_time")
@@ -379,7 +385,6 @@ class ObjectedLeafFactor(LeafFactor):
         super().__init__(name, api)
         self.object = object
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)):
         start_time: pd.Timestamp = config.get_option("start_time")
         end_time: pd.Timestamp = config.get_option("end_time")
@@ -444,7 +449,6 @@ class ListedFactor(AbstractFactor):
     def __init__(self, secuinfo: pd.DataFrame):
         self.secuinfo = secuinfo
 
-    @lru_cache(maxsize=8)
     def _compute(self, config: Config, refs: Tuple = (0, 0)):
         start_time: pd.Timestamp = config.get_option("start_time")
         end_time: pd.Timestamp = config.get_option("end_time")
