@@ -1,79 +1,96 @@
 import pandas as pd
-import pytest
-from xqdata.dataapi import get_dataapi
-from xqdata.mock import MockDataApi
 
-from xqfactor.config import add_api
+from xqfactor import (
+    EvaluationContext,
+    FactorRuntime,
+    LeafFactor,
+    RANK,
+    REF,
+)
+from xqfactor.backends import PandasBackend
 
 
-class TestFactor:
-    """
-    测试Config功能是否正常
-    """
+def _context(output_start: int = 0) -> EvaluationContext:
+    """构造包含历史数据的测试上下文。"""
+    return EvaluationContext(
+        time_index=("t0", "t1", "t2"),
+        universe=("A", "B"),
+        frequency="D",
+        output_start=output_start,
+    )
 
-    def setup_method(self):
-        """每个测试方法执行前的准备"""
-        mockapi: MockDataApi = get_dataapi("mock")
-        mockapi.set_mock_info(
-            "tradedays",
-            {"is_tradeday": "bool"},
-            pd.date_range("20240101", "20251231"),
+
+def test_leaf_factor_uses_resolver() -> None:
+    """叶子因子只调用应用提供的 resolver。"""
+    calls = []
+
+    def resolver(request):
+        calls.append(request)
+        return pd.DataFrame(
+            [[1.0, 2.0], [2.0, 1.0], [3.0, 4.0]],
+            index=request.context.time_index,
+            columns=request.context.universe,
         )
-        add_api(mockapi)
 
-    def test_leaffactor(self):
-        from xqfactor.config import set_option
-        from xqfactor.factor import LeafFactor
+    factor = LeafFactor("close", resolver)
+    value = factor.evaluate(_context(), FactorRuntime(PandasBackend())).data
 
-        set_option("start_time", "20250101")
-        set_option("end_time", "20250630")
-        set_option("universe", ["000001.SH", "000002.SH"])
-        close = LeafFactor("close")
-        assert not close.value.empty
+    assert value.shape == (3, 2)
+    assert calls[0].factor_name == "close"
+    assert calls[0].context.frequency == "D"
 
-    def test_singleleaf_factor(self):
-        from xqfactor.config import set_option
-        from xqfactor.factor import SingleLeafFactor
 
-        set_option("start_time", "20250101")
-        set_option("end_time", "20250630")
-        set_option("universe", ["000001.SH", "000002.SH"])
-        benchmark = SingleLeafFactor("benchmark", "000300.SH")
-        assert benchmark.value["000001.SH"].equals(benchmark.value["000002.SH"])
+def test_binary_expression_and_rank_are_backend_computed() -> None:
+    """二元表达式和 RANK 由参考后端执行。"""
+    factor = LeafFactor(
+        "close",
+        lambda request: pd.DataFrame(
+            [[1.0, 2.0], [2.0, 1.0], [3.0, 4.0]],
+            index=request.context.time_index,
+            columns=request.context.universe,
+        ),
+    )
+    runtime = FactorRuntime(PandasBackend())
+    value = (RANK(factor) + 1).evaluate(_context(), runtime).data
 
-    def test_objectedolLeaffactor_factor(self):
-        from xqfactor.config import set_option
-        from xqfactor.factor import ObjectedLeafFactor
+    assert value.loc["t0", "A"] == 1.5
+    assert value.loc["t0", "B"] == 2.0
 
-        set_option("start_time", "20250101")
-        set_option("end_time", "20250630")
-        set_option("universe", ["000001.SH", "000002.SH"])
-        index_weight = ObjectedLeafFactor("weight", "000300.SH")
-        assert index_weight.value.columns.__len__() == 2
 
-    def test_listedfactor_factor(self):
-        from xqfactor.config import set_option
-        from xqfactor.factor import ListedFactor
+def test_ref_uses_history_and_returns_requested_slice() -> None:
+    """REF 在完整时间轴上移动，根节点再截取输出范围。"""
+    factor = LeafFactor(
+        "close",
+        lambda request: pd.DataFrame(
+            [[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]],
+            index=request.context.time_index,
+            columns=request.context.universe,
+        ),
+    )
+    value = (
+        REF(factor, 1)
+        .evaluate(_context(output_start=1), FactorRuntime(PandasBackend()))
+        .data
+    )
 
-        set_option("start_time", "20250101")
-        set_option("end_time", "20250630")
-        set_option("universe", ["000001.SH", "000002.SH"])
-        listed_info = (
-            {
-                "code": "000001.SH",
-                "listed_date": pd.to_datetime("20240101"),
-                "delisted_date": pd.to_datetime("20250201"),
-            },
-            {
-                "code": "000002.SH",
-                "listed_date": pd.to_datetime("20250301"),
-                "delisted_date": pd.to_datetime("20251231"),
-            },
+    assert list(value.index) == ["t1", "t2"]
+    assert list(value["A"]) == [1.0, 2.0]
+
+
+def test_shared_leaf_is_computed_once_in_one_runtime() -> None:
+    """同一因子图共享叶子节点时只执行一次 resolver。"""
+    calls = 0
+
+    def resolver(request):
+        nonlocal calls
+        calls += 1
+        return pd.DataFrame(
+            1.0,
+            index=request.context.time_index,
+            columns=request.context.universe,
         )
-        listed_info_df = pd.DataFrame(listed_info)
-        listed = ListedFactor(listed_info_df)
-        assert listed.value.columns.__len__() == 2
 
+    factor = LeafFactor("close", resolver)
+    (factor + factor).evaluate(_context(), FactorRuntime(PandasBackend()))
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    assert calls == 1
