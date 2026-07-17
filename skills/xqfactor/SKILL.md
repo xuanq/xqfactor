@@ -1,132 +1,138 @@
 ---
 name: xqfactor
-description: Use the xqfactor Python project to define data-source-independent factors, compose built-in or custom operators, execute factor graphs with explicit contexts and caches, add Pandas/Polars/PyTorch calculations, and build IC, quantile-return, regression, preprocessing, or custom factor analyses. Trigger when an agent needs to integrate xqfactor into a research project, create LeafFactor resolvers for RQData or another source, extend a compute backend, diagnose factor evaluation or caching, or write and test factor-analysis workflows.
+description: Use xqfactor to define data-source-independent Pandas factors, create LeafFactor resolvers for RQData or other sources, compose built-in and custom DataFrame operators, evaluate expression graphs with explicit contexts and caches, and run IC, quantile-return, regression, or custom analyses. Trigger when an agent needs to integrate, extend, test, or diagnose this xqfactor project.
 ---
 
 # xqfactor
 
-## Goal
+## 目标
 
-Use this repository as a data-source-independent factor expression and analysis framework. Keep
-data acquisition in application-owned `LeafFactor` resolvers; keep expression execution, operator
-semantics, axis handling and execution caching in xqfactor.
+使用本项目定义数据源无关的因子表达式。把外部取数放在应用项目的 `LeafFactor`
+resolver 中；把表达式组合、历史需求、轴对齐、递归求值和执行缓存交给 xqfactor。
 
-## Start Here
+所有因子节点统一传递 `pandas.DataFrame`：
 
-1. Read the repository `AGENTS.md`.
-2. Inspect `src/xqfactor/__init__.py` before assuming an API is public.
-3. Read `references/examples.md` for complete runnable patterns.
-4. Install only the extras needed by the consuming project:
+- index：时间；
+- columns：资产；
+- 逻辑形状：`(时间数, 资产数)`。
+
+不要创建新的计算后端。Polars、PyTorch 等库只在确有需要的某个自定义算子内部使用，
+并在算子入口和出口保持 Pandas DataFrame 契约。
+
+## 开始使用
+
+1. 阅读仓库根目录 `AGENTS.md`。
+2. 查看 `src/xqfactor/__init__.py`，确认公共 API。
+3. 阅读 `references/examples.md` 中的完整示例。
+4. 在应用项目安装依赖：
 
 ```bash
-uv add "xqfactor[pandas]"
+uv add xqfactor
 uv add "xqfactor[analysis]"
 ```
 
-Add application-owned dependencies such as `rqdatac`, `polars` or `torch` in the consuming
-project, not to xqfactor core.
+`rqdatac`、Polars、PyTorch 等依赖由使用它们的应用项目自行安装。
 
-## Core Model
+## 核心对象
 
-Build workflows from these objects:
+- `LeafFactor(name, resolver, definition_version="1")`：定义应用拥有的基础因子取数。
+- `EvaluationContext`：声明完整计算时间轴、universe、频率、输出切片、数据语义和
+  provider 版本。
+- `CombinedFactor`：将一个或多个因子 DataFrame 交给自定义计算函数。
+- `RollingWindowFactor`：声明窗口长度并传播历史周期需求。
+- `MemoryCache`：在完全相同的因子定义和执行上下文下复用叶子及中间结果。
+- `ExecutionCache`：应用替换缓存实现时遵守的最小协议。
 
-- `LeafFactor(name, resolver, definition_version="1")`: define application-owned data loading.
-- `EvaluationContext`: declare the complete calculation time axis, universe, frequency, output
-  slice, semantic options and provider version.
-- `FactorRuntime(backend, cache)`: bind a compute backend and execution cache.
-- `FactorValue`: carry backend data plus explicit time and asset axes.
-- `PandasBackend`: execute built-in and custom operators with Pandas/NumPy.
-- `MemoryCache`: reuse leaf and intermediate values only for an identical factor/context/backend
-  identity.
+`time_index` 是完整计算轴，必须包含 `REF`、收益率或窗口算子所需的历史数据。
+`output_start` 和 `output_end` 只裁剪最终结果。
 
-Treat `time_index` as the full calculation axis. Include all history needed by `REF`, rolling
-operators or return calculations. Use `output_start`/`output_end` to remove the history rows from
-the final result.
+## 定义叶子因子
 
-## Define Leaf Factors
-
-Pass all external I/O through the resolver:
+外部 I/O 全部通过 resolver：
 
 ```python
 CLOSE = LeafFactor("close", load_close, definition_version="rqdata-post-v1")
 ```
 
-Make the resolver return a two-dimensional value whose rows follow
-`request.context.time_index` and whose columns follow `request.context.universe`. Reindex before
-returning. Change `definition_version` or `EvaluationContext.provider_version` whenever source
-semantics change and old cache entries must not be reused.
+resolver 接收 `LeafRequest` 并返回 DataFrame。返回前尽量按
+`request.context.time_index` 和 `request.context.universe` 对齐；核心仍会再次
+`reindex`。数据口径变化时更新 `definition_version` 或
+`EvaluationContext.provider_version`，避免复用旧缓存。
 
-Do not add RQData, database or local-file logic to xqfactor core. See the RQData post-adjusted close
-example in `references/examples.md`.
+不要把 RQData、数据库、Parquet 或 DuckDB 逻辑加入 xqfactor 核心。完整的 RQData
+后复权 `CLOSE` 示例见 `references/examples.md`。
 
-## Compose Operators
+## 使用与定义算子
 
-Use exported operators such as `PCT_CHANGE`, `REF`, `RANK`, `NORM`, `MAD`, `IF` and
-`CSNEUTRALIZER`. Arithmetic and comparisons create expression nodes:
+直接使用 `PCT_CHANGE`、`REF`、`RANK`、`NORM`、`MAD`、`IF`、
+`CSNEUTRALIZER` 等内置算子：
 
 ```python
 RETURNS = PCT_CHANGE(CLOSE, 1)
 ALPHA = RANK(RETURNS) * -1
 ```
 
-Use:
+自定义算子采用两层定义：
 
-- `custom_unary` for one input;
-- `custom_binary` for two inputs;
-- `rolling_operator` for a historical window;
-- `define_operator` and `OperatorRegistry` when an application needs named operator metadata.
-
-With `PandasBackend`, custom functions receive Pandas DataFrames. Convert to Polars or PyTorch
-inside the custom function and return a value that the backend can normalize. Preserve row and
-column order. Read the Polars and PyTorch examples before implementing this bridge.
-
-## Execute Factors
-
-Create one runtime and reuse it across related calculations:
+1. 与具体因子无关的 DataFrame 计算函数；
+2. 接收任意因子并返回组合节点的构造函数。
 
 ```python
-runtime = FactorRuntime(PandasBackend(), MemoryCache(maxsize=256))
-value = RETURNS.evaluate(context, runtime)
+def cross_sectional_demean(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame.sub(frame.mean(axis=1), axis=0)
+
+
+def DEMEAN(factor: AbstractFactor) -> CombinedFactor:
+    return CombinedFactor(cross_sectional_demean, factor)
 ```
 
-Reuse the runtime to share leaf and intermediate cache entries. Expect a cache miss when the
-universe, time axis, frequency, output slice, semantic options, provider version, backend version
-or factor definition changes.
+不要创建 `custom_unary(factor, ...)` 这类把算子定义绑定到某个因子实例的 API。
+窗口算子用 `RollingWindowFactor(function, window, factor)` 明确声明历史需求。
 
-Do not use xqfactor execution cache as a market data store. Persistent full-market Parquet,
-DuckDB, Redis or remote cache implementations belong to the consuming application and should only
-implement the `ExecutionCache` protocol if needed.
-
-## Analyze Factors
-
-Import optional implementations from `xqfactor.analysis.pandas`:
+## 执行与缓存
 
 ```python
-from xqfactor.analysis.pandas import ICAnalyzer, Normalizer
+cache = MemoryCache(maxsize=256)
+value = RETURNS.evaluate(context, cache)
 ```
 
-Register processors in required order before calling `analyze`. For normalization followed by IC:
+复用同一个 cache，可以共享叶子和中间节点结果。universe、时间轴、频率、输出切片、
+semantics、provider 版本、resolver 版本或因子定义变化都会形成不同缓存键。
+
+xqfactor 的缓存不是市场数据仓库。全市场 Parquet、DuckDB、Redis 或远程缓存由应用
+项目负责；如需替换会话执行缓存，只实现 `ExecutionCache` 协议。
+
+## 因子检验
+
+从对应领域模块导入具体检验器；`xqfactor.analysis` 只导出 `AbstractAnalyzer`。
+标准化、去极值、中性化等预处理先表达为因子算子，不注册 Processor：
 
 ```python
-analyzer.register_processor("normalization", Normalizer())
-result = analyzer.analyze({"returns": RETURNS})
+from xqfactor.analysis.ic import ICAnalyzer
+
+
+NORMALIZED_RETURNS = NORM(RETURNS)
+result = ICAnalyzer(forward_returns).analyze(
+    {"returns": NORMALIZED_RETURNS},
+    context=context,
+    cache=cache,
+)
 ```
 
-Subclass `AbstractAnalyzer` and implement `_analyze(factors)` to define a custom analyzer. Inputs
-have already been evaluated and processed into Pandas DataFrames.
+自定义检验器从 `xqfactor.analysis` 导入 `AbstractAnalyzer` 并实现
+`_analyze(factors)`。传入的值已经求值为 Pandas DataFrame；检验器只实现统计逻辑。
+IC、分组收益和回归分别位于 `analysis.ic`、`analysis.quantile_return` 和
+`analysis.regression`。行业专用报告、绘图、基准归因和策略业务规则留在应用项目。
 
-## Extend Carefully
+## 修改项目
 
-- Add a built-in operator specification in `operators.py`.
-- Add its implementation to every backend that claims support.
-- Export it from `xqfactor.__init__`.
-- Test axis order, NaN behavior, dtype, history requirements and cache identity.
-- Keep optional libraries out of core imports.
-- Add or update examples when changing public APIs.
+- 新增内置算子时，在 `operators.py` 实现 DataFrame 计算函数和构造函数。
+- 从 `xqfactor.__init__` 导出公共算子。
+- 测试轴顺序、NaN、dtype、历史需求和缓存身份。
+- 公共 API 变化后同步更新本 Skill 和详细示例。
+- 不重新引入 `FactorRuntime`、计算后端注册表、Processor 或数据源专用叶子因子。
 
-## Validate Work
-
-Run:
+## 验证
 
 ```bash
 uv run pytest -q
@@ -136,19 +142,19 @@ uv run python -m compileall -q src
 uv build
 ```
 
-When editing this skill, also run:
+修改 Skill 后还要运行：
 
 ```bash
 uv run --with pyyaml python /Users/xuanqi/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/xqfactor
 ```
 
-## Reference
+## 参考
 
-Read `references/examples.md` for:
+`references/examples.md` 包含：
 
-- RQData post-adjusted `CLOSE`;
-- `RETURNS = PCT_CHANGE(CLOSE, 1)`;
-- Polars and PyTorch custom operators;
-- normalization followed by IC analysis;
-- a custom analyzer;
-- runtime, history and cache patterns.
+- RQData 后复权 `CLOSE`；
+- `RETURNS = PCT_CHANGE(CLOSE, 1)`；
+- Polars 和 PyTorch 自定义算子；
+- 标准化后进行 IC 检验；
+- 自定义检验器；
+- 自定义窗口算子和缓存注意事项。

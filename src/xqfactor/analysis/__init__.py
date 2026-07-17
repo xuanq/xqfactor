@@ -1,5 +1,5 @@
-"""后端无关的因子检验规范。"""
+"""因子检验的公共抽象接口。"""
 
-from .spec import AnalysisPipeline, AnalysisResult, AnalysisSpec, ProcessorSpec
+from .base import AbstractAnalyzer
 
-__all__ = ["AnalysisPipeline", "AnalysisResult", "AnalysisSpec", "ProcessorSpec"]
+__all__ = ["AbstractAnalyzer"]

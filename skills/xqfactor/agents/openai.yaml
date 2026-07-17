@@ -1,4 +1,4 @@
 interface:
   display_name: "xqfactor 因子框架"
-  short_description: "使用 xqfactor 定义、计算和检验跨频率量化因子"
-  default_prompt: "Use $xqfactor to define, compute, extend, and analyze a factor workflow with this project."
+  short_description: "定义、执行、扩展和检验 DataFrame 因子表达式"
+  default_prompt: "Use $xqfactor to define, evaluate, extend, or analyze a factor workflow with this project."

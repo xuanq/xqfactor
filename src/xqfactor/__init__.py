@@ -1,4 +1,4 @@
-"""xqfactor：数据源无关的因子表达式、算子契约和执行缓存框架。"""
+"""xqfactor：数据源无关的 Pandas 因子表达式和执行缓存框架。"""
 
 from xqfactor.factor import (
     AbstractFactor,
@@ -6,7 +6,6 @@ from xqfactor.factor import (
     CombinedFactor,
     ConstantFactor,
     LeafFactor,
-    OperatorNode,
     RefFactor,
     RollingWindowFactor,
     UnaryCombinedFactor,
@@ -44,20 +43,13 @@ from xqfactor.operators import (
     REF,
     SIGN,
     SIGNEDPOWER,
-    custom_binary,
-    custom_unary,
-    define_operator,
-    rolling_operator,
 )
 from xqfactor.runtime import (
     CacheKey,
     EvaluationContext,
-    FactorRuntime,
-    FactorValue,
+    ExecutionCache,
     LeafRequest,
     MemoryCache,
-    OperatorSpec,
-    OperatorRegistry,
 )
 
 __all__ = [
@@ -66,18 +58,14 @@ __all__ = [
     "CombinedFactor",
     "ConstantFactor",
     "LeafFactor",
-    "OperatorNode",
     "RefFactor",
     "RollingWindowFactor",
     "UnaryCombinedFactor",
     "CacheKey",
     "EvaluationContext",
-    "FactorRuntime",
-    "FactorValue",
+    "ExecutionCache",
     "LeafRequest",
     "MemoryCache",
-    "OperatorSpec",
-    "OperatorRegistry",
     "ABS",
     "AS_FLOAT",
     "BINARY_LABEL",
@@ -110,8 +98,4 @@ __all__ = [
     "REF",
     "SIGN",
     "SIGNEDPOWER",
-    "custom_binary",
-    "custom_unary",
-    "rolling_operator",
-    "define_operator",
 ]

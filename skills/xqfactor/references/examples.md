@@ -1,22 +1,11 @@
 # xqfactor 使用示例
 
-## 目录
-
-- [依赖与初始化](#依赖与初始化)
-- [使用 RQData 定义后复权 CLOSE](#使用-rqdata-定义后复权-close)
-- [组合 RETURNS 因子并执行](#组合-returns-因子并执行)
-- [使用 Polars 自定义算子](#使用-polars-自定义算子)
-- [使用 PyTorch 自定义算子](#使用-pytorch-自定义算子)
-- [先标准化再进行 IC 检验](#先标准化再进行-ic-检验)
-- [自定义检验器](#自定义检验器)
-- [窗口与缓存注意事项](#窗口与缓存注意事项)
-
 ## 依赖与初始化
 
 在使用 xqfactor 的应用项目中安装依赖：
 
 ```bash
-uv add "xqfactor[pandas,analysis]"
+uv add "xqfactor[analysis]"
 uv add rqdatac
 uv add polars
 uv add torch
@@ -25,25 +14,19 @@ uv add torch
 `rqdatac`、Polars 和 PyTorch 都是应用依赖，不要加入 xqfactor 核心依赖。
 
 ```python
-import pandas as pd
 import rqdatac
 
-from xqfactor import EvaluationContext, FactorRuntime, MemoryCache
-from xqfactor.backends import PandasBackend
+from xqfactor import MemoryCache
 
 
 rqdatac.init()
-
-runtime = FactorRuntime(
-    backend=PandasBackend(),
-    cache=MemoryCache(maxsize=256),
-)
+cache = MemoryCache(maxsize=256)
 ```
 
 ## 使用 RQData 定义后复权 CLOSE
 
-RQData 的 `get_price` 使用 `adjust_type="post"` 获取股票和 ETF 的后复权行情。
-`expect_df=True` 时返回 Pandas DataFrame；多标的日线通常使用
+RQData 的 `get_price` 使用 `adjust_type="post"` 获取后复权行情。
+`expect_df=True` 时，多标的日线结果通常使用
 `(order_book_id, date)` MultiIndex。
 
 ```python
@@ -52,14 +35,13 @@ from typing import Any
 import pandas as pd
 import rqdatac
 
-from xqfactor import LeafFactor
-from xqfactor.runtime import LeafRequest
+from xqfactor import LeafFactor, LeafRequest
 
 
 def _to_rq_frequency(frequency: str) -> str:
     """将应用频率转换为 rqdatac.get_price 支持的频率。
 
-    输入：xqfactor EvaluationContext 中的频率字符串。
+    输入：EvaluationContext 中的频率字符串。
     输出：RQData 使用的频率字符串。
     """
     return {
@@ -99,7 +81,7 @@ def load_close(request: LeafRequest) -> pd.DataFrame:
     # ************************************************************
     # RQData 结果从 MultiIndex Series：
     # (order_book_id, date/datetime) -> value
-    # 转换为二维 DataFrame：
+    # 转换为 DataFrame (时间数, 资产数)：
     # index=date/datetime，columns=order_book_id。
     # ************************************************************
     close = data["close"].unstack("order_book_id")
@@ -152,23 +134,22 @@ context = EvaluationContext(
     provider_version="rqdata-2025-07",
 )
 
-returns_value = RETURNS.evaluate(context, runtime)
-returns_df = returns_value.data
+returns_df = RETURNS.evaluate(context, cache)
 ```
 
-在同一个 `runtime` 中再次计算 `CLOSE`、`RETURNS` 或依赖它们的其他表达式时，可以
-复用已经读取的叶子值和中间结果。
+复用同一个 `cache` 再计算 `CLOSE`、`RETURNS` 或依赖它们的表达式时，可以复用已经
+读取的叶子值和中间结果。
 
 ## 使用 Polars 自定义算子
 
-当前参考执行后端是 `PandasBackend`，因此自定义函数接收 Pandas DataFrame。可以在
-函数内部转换为 Polars，计算后再恢复相同的时间轴和资产轴。
+算子的公共输入输出仍为 Pandas DataFrame，只在这个算子内部转换到 Polars。
+算子定义不绑定 `CLOSE`，因此可应用到任意因子。
 
 ```python
 import pandas as pd
 import polars as pl
 
-from xqfactor import custom_unary
+from xqfactor import AbstractFactor, CombinedFactor
 
 
 def polars_log1p(frame: pd.DataFrame) -> pd.DataFrame:
@@ -180,8 +161,8 @@ def polars_log1p(frame: pd.DataFrame) -> pd.DataFrame:
     index_name = frame.index.name or "datetime"
 
     # ************************************************************
-    # 数据形状保持 (时间数, 资产数) 不变。
-    # reset_index 临时把时间 index 变为普通列，计算后再恢复。
+    # DataFrame (T, N) -> Polars DataFrame (T, 1 + N)：
+    # 时间 index 临时变为普通列；计算后恢复为 DataFrame (T, N)。
     # ************************************************************
     polars_frame = pl.from_pandas(frame.rename_axis(index_name).reset_index())
     transformed = polars_frame.with_columns(
@@ -190,13 +171,13 @@ def polars_log1p(frame: pd.DataFrame) -> pd.DataFrame:
     return transformed.to_pandas().set_index(index_name).reindex_like(frame)
 
 
-POLARS_LOG_CLOSE = custom_unary(
-    CLOSE,
-    polars_log1p,
-    name="polars_log1p",
-)
+def POLARS_LOG1P(factor: AbstractFactor) -> CombinedFactor:
+    """将 Polars log1p 逻辑应用到任意因子。"""
+    return CombinedFactor(polars_log1p, factor)
 
-polars_result = POLARS_LOG_CLOSE.evaluate(context, runtime).data
+
+POLARS_LOG_CLOSE = POLARS_LOG1P(CLOSE)
+polars_result = POLARS_LOG_CLOSE.evaluate(context, cache)
 ```
 
 ## 使用 PyTorch 自定义算子
@@ -205,7 +186,7 @@ polars_result = POLARS_LOG_CLOSE.evaluate(context, runtime).data
 import pandas as pd
 import torch
 
-from xqfactor import custom_unary
+from xqfactor import AbstractFactor, CombinedFactor
 
 
 def torch_sigmoid(frame: pd.DataFrame) -> pd.DataFrame:
@@ -227,67 +208,60 @@ def torch_sigmoid(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-TORCH_SIGMOID_CLOSE = custom_unary(
-    CLOSE,
-    torch_sigmoid,
-    name="torch_sigmoid",
-)
+def TORCH_SIGMOID(factor: AbstractFactor) -> CombinedFactor:
+    """将 PyTorch sigmoid 逻辑应用到任意因子。"""
+    return CombinedFactor(torch_sigmoid, factor)
 
-torch_result = TORCH_SIGMOID_CLOSE.evaluate(context, runtime).data
+
+TORCH_SIGMOID_CLOSE = TORCH_SIGMOID(CLOSE)
+torch_result = TORCH_SIGMOID_CLOSE.evaluate(context, cache)
 ```
 
-如果需要真正以 Polars 或 PyTorch 对象贯穿整个表达式图，应实现新的
-`ComputeBackend`，而不是在每个算子中反复转换。
+不要为 Polars 或 PyTorch 建立独立后端；新增算子时只维护该算子实际使用的实现。
 
 ## 先标准化再进行 IC 检验
 
-下面先计算下一期收益，再对被检验因子执行横截面标准化，最后计算逐期 IC。
+预处理仍然输入和输出因子，因此先用 `NORM` 构造标准化因子，再把它交给 IC 检验器。
 
 ```python
-from xqfactor.analysis.pandas import ICAnalyzer, Normalizer
+from xqfactor import NORM
+from xqfactor.analysis.ic import ICAnalyzer
 
 
-raw_returns = RETURNS.evaluate(context, runtime).data
+raw_returns = RETURNS.evaluate(context, cache)
 forward_returns = raw_returns.shift(-1)
+NORMALIZED_RETURNS = NORM(RETURNS)
 
-analyzer = ICAnalyzer(
-    returns=forward_returns,
+ic_result = ICAnalyzer(forward_returns).analyze(
+    {"returns": NORMALIZED_RETURNS},
     context=context,
-    runtime=runtime,
-    keep_processed_results=True,
+    cache=cache,
 )
-analyzer.register_processor("normalization", Normalizer())
-
-ic_result = analyzer.analyze({"returns": RETURNS})
 ic_series = ic_result.data
 ic_summary = ic_result.summary()
-
-normalized_returns = analyzer.processed_results[
-    ("returns", "normalization")
-]
+normalized_returns = NORMALIZED_RETURNS.evaluate(context, cache)
 ```
 
-处理器按注册顺序运行。需要先去极值再标准化时：
+需要先去极值再标准化时直接组合算子：
 
 ```python
-from xqfactor.analysis.pandas import Normalizer, Winsorizer
+from xqfactor import MAD, NORM
 
 
-analyzer.register_processor("winsorization", Winsorizer(n=3.0))
-analyzer.register_processor("normalization", Normalizer())
+PROCESSED_RETURNS = NORM(MAD(RETURNS, n=3.0))
 ```
 
 ## 自定义检验器
 
-继承 `AbstractAnalyzer` 并实现 `_analyze`。传入 `_analyze` 的因子已经完成求值和所有
-预处理，因此类型是 `dict[str, pd.DataFrame]`。
+继承 `AbstractAnalyzer` 并实现 `_analyze`。传入 `_analyze` 的因子已经求值为
+`dict[str, pd.DataFrame]`，不再经过 Processor。
 
 ```python
 from typing import Mapping
 
 import pandas as pd
 
-from xqfactor.analysis.pandas import AbstractAnalyzer, Normalizer
+from xqfactor.analysis import AbstractAnalyzer
 
 
 class CoverageAnalyzer(AbstractAnalyzer):
@@ -311,44 +285,50 @@ class CoverageAnalyzer(AbstractAnalyzer):
         )
 
 
-coverage_analyzer = CoverageAnalyzer(context=context, runtime=runtime)
-coverage_analyzer.register_processor("normalization", Normalizer())
-coverage = coverage_analyzer.analyze(
+coverage = CoverageAnalyzer().analyze(
     {
-        "returns": RETURNS,
+        "returns": NORMALIZED_RETURNS,
         "polars_log_close": POLARS_LOG_CLOSE,
-    }
+    },
+    context=context,
+    cache=cache,
 )
 ```
 
-自定义检验器可以直接返回 Series、DataFrame、dataclass 或其他业务结果对象；如果希望
-与通用 `AnalysisResult` 协议兼容，结果对象应提供 `data` 属性。
+自定义检验器可以直接返回 Series、DataFrame、dataclass 或其他业务结果对象。
+本项目只内置 IC、分组收益和回归等通用检验；行业专用报告、绘图、基准归因和策略规则
+由应用项目实现。
 
-## 窗口与缓存注意事项
-
-自定义窗口算子：
+## 自定义窗口算子与缓存
 
 ```python
 import pandas as pd
 
-from xqfactor import rolling_operator
+from xqfactor import AbstractFactor, RollingWindowFactor
 
 
-def rolling_mean(frame: pd.DataFrame, window: int) -> pd.DataFrame:
-    """计算时间序列移动平均。"""
+def rolling_mean(
+    frame: pd.DataFrame,
+    window: int,
+) -> pd.DataFrame:
+    """计算时间序列移动平均。
+
+    输入：形状为 (时间数, 资产数) 的因子值和窗口长度。
+    输出：形状及轴与输入一致的移动平均 DataFrame。
+    """
     return frame.rolling(window).mean()
 
 
-MA20 = rolling_operator(
-    CLOSE,
-    window=20,
-    function=rolling_mean,
-    name="ma20",
-)
+def MA20(factor: AbstractFactor) -> RollingWindowFactor:
+    """将 20 期移动平均应用到任意因子。"""
+    return RollingWindowFactor(rolling_mean, 20, factor)
+
+
+MA20_CLOSE = MA20(CLOSE)
 ```
 
 构造上下文时至少提供 19 个额外历史周期，并把 `output_start` 设置到目标输出起点。
-可以通过 `MA20.required_history()` 查询表达式需要的历史周期数。
+可以通过 `MA20_CLOSE.required_history()` 查询表达式需要的历史周期数。
 
 缓存键包含：
 
@@ -356,7 +336,6 @@ MA20 = rolling_operator(
 - 完整时间轴与输出切片；
 - universe 和 frequency；
 - semantics；
-- provider 版本；
-- backend 版本。
+- provider 版本。
 
 不同 universe、频率或时间区间不会共享缓存。长期全市场数据存储不属于 xqfactor。

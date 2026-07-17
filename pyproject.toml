@@ -1,32 +1,29 @@
 [project]
 name = "xqfactor"
 version = "0.2.0"
-description = "数据源无关的因子表达式、算子契约和执行缓存框架"
+description = "数据源无关的 Pandas 因子表达式、执行缓存和检验规范框架"
 readme = "README.md"
 authors = [
     { name = "xuanqi", email = "xuanqiraphael@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
-
-[project.optional-dependencies]
-pandas = [
+dependencies = [
     "numpy>=2.0",
     "pandas>=2.2",
 ]
+
+[project.optional-dependencies]
 analysis = [
-    "numpy>=2.0",
-    "pandas>=2.2",
     "scipy>=1.14",
     "statsmodels>=0.14.6",
 ]
 
 [dependency-groups]
 dev = [
-    "numpy>=2.0",
-    "pandas>=2.2",
     "pytest>=9.0.2",
     "ruff>=0.14.11",
+    "scipy>=1.14",
+    "statsmodels>=0.14.6",
 ]
 
 [build-system]
