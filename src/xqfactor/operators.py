@@ -12,6 +12,7 @@ from xqfactor.factor import (
     BinaryCombinedFactor,
     CombinedFactor,
     ConstantFactor,
+    FixedFactor,
     RefFactor,
     UnaryCombinedFactor,
 )
@@ -335,6 +336,15 @@ def REF(factor: AbstractFactor, n: int) -> AbstractFactor:
     if n == 0:
         return factor
     return RefFactor(factor, n)
+
+
+def FIX(factor: AbstractFactor, asset: str | int) -> FixedFactor:
+    """固定因子在指定资产上的时间序列并广播到当前 universe。
+
+    输入：待固定的因子表达式和目标资产标识。
+    输出：形状为 ``(时间数, 当前资产数)``、每列均为目标资产因子值的节点。
+    """
+    return FixedFactor(factor, asset)
 
 
 def DELAY(factor: AbstractFactor, n: int) -> AbstractFactor:

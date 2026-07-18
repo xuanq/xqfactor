@@ -47,6 +47,21 @@ cache = MemoryCache(maxsize=256)
 result = factor.evaluate(context, cache)
 ```
 
+## 固定公共类因子
+
+使用 `FIX` 可以把任意因子表达式固定到指定资产，再广播到当前 universe。固定过程
+在只包含目标资产的子上下文中求值，因此不会因为当前研究股票池变化而改变，适合指数或
+基准收益等公共类因子。
+
+```python
+from xqfactor import FIX, PCT_CHANGE
+
+
+RETURNS = PCT_CHANGE(CLOSE, 1)
+CSI500_RETURNS = FIX(RETURNS, "000985.XSHG")
+EXCESS_RETURNS = RETURNS - CSI500_RETURNS
+```
+
 ## 自定义算子
 
 自定义算子分为“与因子无关的 DataFrame 计算函数”和“表达式构造函数”两层：

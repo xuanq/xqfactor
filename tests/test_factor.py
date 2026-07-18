@@ -1,6 +1,16 @@
 import pandas as pd
+import pytest
 
-from xqfactor import EvaluationContext, LeafFactor, LeafRequest, RANK, REF
+from xqfactor import (
+    FIX,
+    EvaluationContext,
+    LeafFactor,
+    LeafRequest,
+    MemoryCache,
+    PCT_CHANGE,
+    RANK,
+    REF,
+)
 
 
 def _context(output_start: int = 0) -> EvaluationContext:
@@ -87,3 +97,104 @@ def test_leaf_result_is_aligned_to_context_axes() -> None:
     assert list(value.columns) == ["A", "B"]
     assert pd.isna(value.loc["t1", "B"])
     assert value.loc["t2", "B"] == 3.0
+
+
+def test_fix_uses_single_asset_context_and_broadcasts() -> None:
+    """FIX 应在目标资产上下文取数，并将结果广播到当前资产池。"""
+    requested_universes: list[tuple[str | int, ...]] = []
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回目标资产的三期测试值。"""
+        requested_universes.append(request.context.universe)
+        return pd.DataFrame(
+            [[10.0], [11.0], [12.0]],
+            index=request.context.time_index,
+            columns=request.context.universe,
+        )
+
+    value = FIX(LeafFactor("close", resolver), "INDEX").evaluate(_context())
+
+    assert requested_universes == [("INDEX",)]
+    assert list(value.columns) == ["A", "B"]
+    assert value.loc["t1", "A"] == value.loc["t1", "B"] == 11.0
+
+
+def test_fix_preserves_expression_history_and_cross_sectional_semantics() -> None:
+    """FIX 应保留子表达式历史需求，并在单标的轴上执行横截面算子。"""
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回与请求资产轴一致的三期测试值。"""
+        return pd.DataFrame(
+            [[10.0], [12.0], [15.0]],
+            index=request.context.time_index,
+            columns=request.context.universe,
+        )
+
+    leaf = LeafFactor("close", resolver)
+    fixed_return = FIX(PCT_CHANGE(leaf, 1), "INDEX")
+    fixed_rank = FIX(RANK(leaf), "INDEX")
+
+    return_value = fixed_return.evaluate(_context(output_start=1))
+    rank_value = fixed_rank.evaluate(_context())
+
+    assert fixed_return.required_history() == 1
+    assert list(return_value["A"]) == pytest.approx([0.2, 0.25])
+    assert rank_value.loc["t0", "A"] == rank_value.loc["t0", "B"] == 1.0
+
+
+def test_fix_reuses_single_asset_cache_across_current_universes() -> None:
+    """不同当前 universe 求值时应复用相同目标资产的子因子缓存。"""
+    calls = 0
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回与请求资产轴一致的常数测试数据。"""
+        nonlocal calls
+        calls += 1
+        return pd.DataFrame(
+            5.0,
+            index=request.context.time_index,
+            columns=request.context.universe,
+        )
+
+    def context_with_universe(*universe: str) -> EvaluationContext:
+        """创建指定当前资产池的测试上下文。"""
+        return EvaluationContext(
+            time_index=("t0", "t1", "t2"),
+            universe=universe,
+            frequency="D",
+        )
+
+    leaf = LeafFactor("close", resolver)
+    fixed = FIX(leaf, "INDEX")
+    cache = MemoryCache()
+
+    first = fixed.evaluate(context_with_universe("A", "B"), cache)
+    second = fixed.evaluate(context_with_universe("A", "C"), cache)
+
+    assert calls == 1
+    assert list(first.columns) == ["A", "B"]
+    assert list(second.columns) == ["A", "C"]
+    assert fixed.fingerprint() != FIX(leaf, "OTHER").fingerprint()
+
+
+def test_fix_can_build_excess_return_expression() -> None:
+    """FIX 应支持构造资产收益相对公共资产收益的超额收益。"""
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """根据请求资产返回三期价格序列。"""
+        prices = {
+            "A": [100.0, 110.0, 121.0],
+            "B": [200.0, 210.0, 231.0],
+            "INDEX": [1000.0, 1020.0, 1040.0],
+        }
+        return pd.DataFrame(
+            {asset: prices[asset] for asset in request.context.universe},
+            index=request.context.time_index,
+        )
+
+    returns = PCT_CHANGE(LeafFactor("close", resolver), 1)
+    excess_returns = returns - FIX(returns, "INDEX")
+    value = excess_returns.evaluate(_context(output_start=1))
+
+    assert list(value["A"]) == pytest.approx([0.08, 0.0803921568627451])
+    assert list(value["B"]) == pytest.approx([0.03, 0.0803921568627451])

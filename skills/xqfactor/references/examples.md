@@ -140,6 +140,23 @@ returns_df = RETURNS.evaluate(context, cache)
 复用同一个 `cache` 再计算 `CLOSE`、`RETURNS` 或依赖它们的表达式时，可以复用已经
 读取的叶子值和中间结果。
 
+## 固定公共类因子
+
+`FIX` 在目标资产的单标的上下文中计算因子，再将结果从 `(时间数, 1)` 广播为当前
+universe 的 `(时间数, 资产数)`，适合指数或基准收益等公共类因子：
+
+```python
+from xqfactor import FIX
+
+
+CSI500_RETURNS = FIX(RETURNS, "000985.XSHG")
+EXCESS_RETURNS = RETURNS - CSI500_RETURNS
+excess_returns = EXCESS_RETURNS.evaluate(context, cache)
+```
+
+固定因子的缓存会区分目标资产；同一目标资产在不同当前 universe 下求值时，可以复用
+单标的子上下文中的叶子和中间结果。
+
 ## 使用 Polars 自定义算子
 
 算子的公共输入输出仍为 Pandas DataFrame，只在这个算子内部转换到 Polars。

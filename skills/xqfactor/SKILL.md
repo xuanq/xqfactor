@@ -40,6 +40,7 @@ uv add "xqfactor[analysis]"
   provider 版本。
 - `CombinedFactor`：将一个或多个因子 DataFrame 交给自定义计算函数。
 - `RollingWindowFactor`：声明窗口长度并传播历史周期需求。
+- `FixedFactor`：在指定资产的单标的上下文中计算因子并广播到当前 universe。
 - `MemoryCache`：在完全相同的因子定义和执行上下文下复用叶子及中间结果。
 - `ExecutionCache`：应用替换缓存实现时遵守的最小协议。
 
@@ -65,12 +66,22 @@ resolver 接收 `LeafRequest` 并返回 DataFrame。返回前尽量按
 ## 使用与定义算子
 
 直接使用 `PCT_CHANGE`、`REF`、`RANK`、`NORM`、`MAD`、`IF`、
-`CSNEUTRALIZER` 等内置算子：
+`CSNEUTRALIZER`、`FIX` 等内置算子：
 
 ```python
 RETURNS = PCT_CHANGE(CLOSE, 1)
 ALPHA = RANK(RETURNS) * -1
 ```
+
+使用 `FIX` 将任意因子固定到一个公共资产，再广播到当前 universe：
+
+```python
+CSI500_RETURNS = FIX(RETURNS, "000985.XSHG")
+EXCESS_RETURNS = RETURNS - CSI500_RETURNS
+```
+
+`FIX` 会在 `universe=(目标资产,)` 的子上下文中求值，被固定表达式中的横截面算子也
+因此只作用于这个单标的上下文；它适合指数、基准等不应随研究股票池变化的公共类因子。
 
 自定义算子采用两层定义：
 

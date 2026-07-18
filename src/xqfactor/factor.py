@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Callable
 
 import numpy as np
@@ -231,6 +232,53 @@ class LeafFactor(AbstractFactor):
         """调用应用提供的 resolver 获取完整时间轴上的二维数据。"""
         del cache
         return self.resolver(LeafRequest(self.name, context, self.definition_version))
+
+
+class FixedFactor(AbstractFactor):
+    """将任意因子固定到一个资产后广播到当前资产池。"""
+
+    def __init__(self, factor: AbstractFactor, asset: str | int) -> None:
+        """创建固定资产因子。
+
+        输入：待固定的因子表达式和目标资产标识。
+        输出：在目标资产上求值、再广播到调用方 universe 的因子节点。
+        """
+        if not isinstance(asset, (str, int)):
+            raise TypeError("asset 必须是 str 或 int")
+        self.factor = factor
+        self.asset = asset
+
+    def required_history(self) -> int:
+        """返回被固定因子的历史需求。"""
+        return self.factor.required_history()
+
+    def definition(self) -> tuple[Any, ...]:
+        """返回目标资产和被固定因子的定义。"""
+        return (self.__class__.__name__, self.asset, self.factor.definition())
+
+    def _compute(
+        self,
+        context: EvaluationContext,
+        cache: ExecutionCache,
+    ) -> pd.DataFrame:
+        """在单标的上下文中计算因子并广播到调用方资产轴。"""
+        # ************************************************************
+        # 子因子从调用方 universe=(N,) 切换到固定资产 universe=(1,)，
+        # 时间轴、频率、语义、provider 版本和输出切片全部保持不变。
+        # ************************************************************
+        fixed_context = replace(context, universe=(self.asset,))
+        fixed_value = self.factor._evaluate(fixed_context, cache)
+
+        # ************************************************************
+        # 子因子结果从 DataFrame (T, 1) 广播为 DataFrame (T, N)；
+        # index 保持完整计算时间轴，columns 恢复为调用方 universe。
+        # ************************************************************
+        fixed_series = fixed_value.iloc[:, 0]
+        return pd.concat(
+            [fixed_series] * len(context.universe),
+            axis=1,
+            keys=context.universe,
+        )
 
 
 class UnaryCombinedFactor(_CallableFactor):
