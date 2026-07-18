@@ -40,6 +40,8 @@ uv add "xqfactor[analysis]"
   provider 版本。
 - `CombinedFactor`：将一个或多个因子 DataFrame 交给自定义计算函数。
 - `RollingWindowFactor`：声明窗口长度并传播历史周期需求。
+- `CombinedRollingWindowFactor`：将多个因子 DataFrame 交给带窗口长度的自定义计算函数，
+  回调形式为 `func(window, *values)`。
 - `FixedFactor`：在指定资产的单标的上下文中计算因子并广播到当前 universe。
 - `MemoryCache`：在完全相同的因子定义和执行上下文下复用叶子及中间结果。
 - `ExecutionCache`：应用替换缓存实现时遵守的最小协议。
@@ -98,7 +100,9 @@ def DEMEAN(factor: AbstractFactor) -> CombinedFactor:
 ```
 
 不要创建 `custom_unary(factor, ...)` 这类把算子定义绑定到某个因子实例的 API。
-窗口算子用 `RollingWindowFactor(function, window, factor)` 明确声明历史需求。
+窗口算子用 `RollingWindowFactor(function, window, factor)` 或
+`CombinedRollingWindowFactor(function, window, *factors)` 明确声明历史需求；多因子窗口
+回调接收完整计算轴上的多个 DataFrame，输入形状均为 `(时间数, 资产数)`。
 
 ## 执行与缓存
 

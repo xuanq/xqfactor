@@ -483,6 +483,57 @@ class RollingWindowFactor(_CallableFactor):
         )
 
 
+class CombinedRollingWindowFactor(_CallableFactor):
+    """执行多输入时间窗口函数的因子节点。"""
+
+    def __init__(
+        self,
+        func: Callable[..., pd.DataFrame],
+        window: int,
+        *factors: AbstractFactor,
+    ) -> None:
+        """创建多输入时间窗口节点。
+
+        输入：接受窗口长度和一个或多个输入因子的计算函数。
+        输出：在多个因子完整时间轴上执行窗口计算的因子节点。
+        """
+        if not isinstance(window, int) or isinstance(window, bool) or window <= 0:
+            raise ValueError("window 必须为正整数")
+        if not factors:
+            raise ValueError("CombinedRollingWindowFactor 至少需要一个输入因子")
+        self.func = func
+        self.window = window
+        self.factors = factors
+
+    def required_history(self) -> int:
+        """返回所有子因子最大历史需求与窗口新增需求之和。"""
+        return max(factor.required_history() for factor in self.factors) + (
+            self.window - 1
+        )
+
+    def definition(self) -> tuple[Any, ...]:
+        """返回窗口函数、长度和全部依赖因子定义。"""
+        return (
+            self.__class__.__name__,
+            self._func_fingerprint,
+            self.window,
+            tuple(factor.definition() for factor in self.factors),
+        )
+
+    def _compute(
+        self,
+        context: EvaluationContext,
+        cache: ExecutionCache,
+    ) -> pd.DataFrame:
+        """计算全部子因子并执行多输入窗口函数。"""
+        # ************************************************************
+        # 子因子均在完整计算轴上求值，values 的每个 DataFrame 形状均为
+        # (时间数, 资产数)，最后由根节点统一裁剪 output 时间区间。
+        # ************************************************************
+        values = tuple(factor._evaluate(context, cache) for factor in self.factors)
+        return self.func(self.window, *values)
+
+
 class ConstantFactor(AbstractFactor):
     """将常量或二维表包装为因子节点。"""
 

@@ -344,6 +344,38 @@ def MA20(factor: AbstractFactor) -> RollingWindowFactor:
 MA20_CLOSE = MA20(CLOSE)
 ```
 
+多个因子需要共享同一个时间窗口时，使用 `CombinedRollingWindowFactor`。回调的第一个
+参数是窗口长度，后续参数按构造函数中的因子顺序接收 DataFrame：
+
+```python
+from xqfactor import AbstractFactor, CombinedRollingWindowFactor
+
+
+def rolling_spread(
+    window: int,
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+) -> pd.DataFrame:
+    """计算两个因子的滚动均值差。
+
+    输入：窗口长度，以及两个形状为 (时间数, 资产数) 的因子值。
+    输出：形状和轴与输入一致的滚动均值差 DataFrame。
+    """
+    return left.rolling(window).mean() - right.rolling(window).mean()
+
+
+def ROLLING_SPREAD(
+    left: AbstractFactor,
+    right: AbstractFactor,
+    window: int = 20,
+) -> CombinedRollingWindowFactor:
+    """将两个因子组合为指定窗口的滚动均值差。"""
+    return CombinedRollingWindowFactor(rolling_spread, window, left, right)
+
+
+ROLLING_SPREAD_CLOSE = ROLLING_SPREAD(CLOSE, RETURNS)
+```
+
 构造上下文时至少提供 19 个额外历史周期，并把 `output_start` 设置到目标输出起点。
 可以通过 `MA20_CLOSE.required_history()` 查询表达式需要的历史周期数。
 

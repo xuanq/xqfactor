@@ -1,11 +1,14 @@
 import pandas as pd
+import pytest
 
 from xqfactor import (
     AbstractFactor,
     CombinedFactor,
+    CombinedRollingWindowFactor,
     EvaluationContext,
     LeafFactor,
     LeafRequest,
+    RefFactor,
     RollingWindowFactor,
 )
 
@@ -77,3 +80,89 @@ def test_custom_rolling_operator_preserves_history_contract() -> None:
 
     assert rolling.required_history() == 1
     assert list(result["A"]) == [1.5, 2.5]
+
+
+def test_combined_rolling_operator_receives_window_and_all_full_axis_values() -> None:
+    """多因子窗口算子应按顺序接收窗口及完整计算轴上的全部值。"""
+    received: dict[str, object] = {}
+
+    def rolling_difference(
+        window: int,
+        first: pd.DataFrame,
+        second: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """计算两个因子的窗口均值差。"""
+        received["window"] = window
+        received["first_index"] = first.index
+        received["second_index"] = second.index
+        return first.rolling(window).mean() - second.rolling(window).mean()
+
+    factor = CombinedRollingWindowFactor(
+        rolling_difference,
+        2,
+        _leaf("first"),
+        _leaf("second", offset=10.0),
+    )
+    result = factor.evaluate(_context(output_start=1))
+
+    assert received["window"] == 2
+    assert list(received["first_index"]) == ["t0", "t1", "t2"]
+    assert list(received["second_index"]) == ["t0", "t1", "t2"]
+    assert list(result["A"]) == [-10.0, -10.0]
+    assert list(result["B"]) == [-10.0, -10.0]
+    assert list(result.index) == ["t1", "t2"]
+
+
+def test_combined_rolling_operator_propagates_max_history() -> None:
+    """多因子窗口算子应叠加最大子因子历史需求和窗口历史。"""
+    factor = CombinedRollingWindowFactor(
+        lambda window, first, second: first.rolling(window).mean()
+        + second.rolling(window).mean(),
+        3,
+        _leaf("first"),
+        RefFactor(_leaf("second"), 2),
+    )
+
+    assert factor.required_history() == 4
+
+
+def test_combined_rolling_operator_fingerprint_includes_window_and_factors() -> None:
+    """窗口长度或输入因子定义变化时应生成不同缓存指纹。"""
+
+    def rolling_sum(
+        window: int,
+        first: pd.DataFrame,
+        second: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """计算两个因子的窗口和。"""
+        return first.rolling(window).sum() + second.rolling(window).sum()
+
+    first = CombinedRollingWindowFactor(
+        rolling_sum,
+        2,
+        _leaf("first"),
+        _leaf("second"),
+    )
+    different_window = CombinedRollingWindowFactor(
+        rolling_sum,
+        3,
+        _leaf("first"),
+        _leaf("second"),
+    )
+    different_factor = CombinedRollingWindowFactor(
+        rolling_sum,
+        2,
+        _leaf("first"),
+        _leaf("other"),
+    )
+
+    assert first.fingerprint() != different_window.fingerprint()
+    assert first.fingerprint() != different_factor.fingerprint()
+
+
+def test_combined_rolling_operator_rejects_invalid_definition() -> None:
+    """多因子窗口算子应拒绝非正窗口和空输入因子。"""
+    with pytest.raises(ValueError, match="window"):
+        CombinedRollingWindowFactor(lambda window, value: value, 0, _leaf("close"))
+    with pytest.raises(ValueError, match="至少需要一个"):
+        CombinedRollingWindowFactor(lambda window, value: value, 2)

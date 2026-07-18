@@ -1,6 +1,6 @@
 [project]
 name = "xqfactor"
-version = "0.2.1"
+version = "0.2.2"
 description = "数据源无关的 Pandas 因子表达式、执行缓存和检验规范框架"
 readme = "README.md"
 authors = [
