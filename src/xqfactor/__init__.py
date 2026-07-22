@@ -1,16 +1,28 @@
 """xqfactor：数据源无关的 Pandas 因子表达式和执行缓存框架。"""
 
+from xqfactor.context import (
+    AssetId,
+    DateInput,
+    EvaluationContext,
+    EvaluationContextBuilder,
+    Frequency,
+    LeafRequest,
+    Market,
+    validate_frequency,
+)
 from xqfactor.factor import (
     AbstractFactor,
     BinaryCombinedFactor,
     CombinedFactor,
     CombinedRollingWindowFactor,
     ConstantFactor,
+    FactorPeriodRequirements,
     FixedFactor,
     LeafFactor,
     RefFactor,
     RollingWindowFactor,
     UnaryCombinedFactor,
+    get_defined_factor_periods,
 )
 from xqfactor.operators import (
     ABS,
@@ -49,27 +61,33 @@ from xqfactor.operators import (
 )
 from xqfactor.runtime import (
     CacheKey,
-    EvaluationContext,
     ExecutionCache,
-    LeafRequest,
     MemoryCache,
 )
 
 __all__ = [
+    "AssetId",
+    "DateInput",
+    "EvaluationContext",
+    "EvaluationContextBuilder",
+    "Frequency",
+    "LeafRequest",
+    "Market",
+    "validate_frequency",
     "AbstractFactor",
     "BinaryCombinedFactor",
     "CombinedFactor",
     "CombinedRollingWindowFactor",
     "ConstantFactor",
+    "FactorPeriodRequirements",
     "FixedFactor",
     "LeafFactor",
     "RefFactor",
     "RollingWindowFactor",
     "UnaryCombinedFactor",
+    "get_defined_factor_periods",
     "CacheKey",
-    "EvaluationContext",
     "ExecutionCache",
-    "LeafRequest",
     "MemoryCache",
     "ABS",
     "AS_FLOAT",

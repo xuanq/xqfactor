@@ -14,7 +14,9 @@
 ## 项目结构
 
 - `src/xqfactor/factor.py`：因子节点、`LeafFactor`、表达式求值和历史窗口需求。
-- `src/xqfactor/runtime.py`：`EvaluationContext`、`LeafRequest` 和执行缓存协议。
+- `src/xqfactor/context.py`：`EvaluationContext`、`LeafRequest`、规范频率和构造协议。
+- `src/xqfactor/runtime.py`：稳定指纹、缓存键和执行缓存协议。
+- `src/xqfactor/providers/`：RQData 等可选数据源的上下文构造实现。
 - `src/xqfactor/operators.py`：基于 Pandas/NumPy 的内置算子。
 - `src/xqfactor/analysis/base.py`：`AbstractAnalyzer` 和统一输入求值流程。
 - `src/xqfactor/analysis/ic.py`：IC 检验器和结果。
@@ -32,6 +34,8 @@
 - resolver 接收 `LeafRequest`，返回 Pandas DataFrame。
 - DataFrame 的 index 为时间，columns 为资产；核心按上下文轴执行 `reindex`。
 - `EvaluationContext.time_index` 必须包含窗口算子和 `REF` 所需的历史区间。
+- `EvaluationContext.frequency` 必须使用 Pandas 规范 `freqstr`；数据源频率别名由
+  provider 或 resolver 负责映射。
 - `output_start` 和 `output_end` 只控制最终输出切片，不控制叶子数据读取范围。
 - 因子值逻辑形状固定为 `(时间, 资产)`；发生形状、index 或 columns 转换时必须注释。
 - 缓存只在因子定义、完整上下文和 provider 版本一致时命中。
@@ -107,7 +111,9 @@ uv run --with pyyaml python /Users/xuanqi/.codex/skills/.system/skill-creator/sc
 
 ## 代码阅读路径
 
-从应用创建 `LeafFactor` 开始，resolver 根据 `LeafRequest` 返回原始二维 DataFrame；
+上下文模型与构造协议位于 `context.py`，具体数据源实现位于 `providers/`；
+`runtime.py` 只负责稳定指纹和缓存。从应用创建 `LeafFactor` 开始，resolver 根据
+`LeafRequest` 返回原始二维 DataFrame；
 `operators.py` 将基础因子组合成表达式图；`factor.evaluate()` 使用传入或临时创建的
 `MemoryCache`，未命中时递归计算子节点，统一对齐 `EvaluationContext` 的时间轴和资产轴，
 最后截取输出时间区间。检验流程从 `analysis/base.py` 的

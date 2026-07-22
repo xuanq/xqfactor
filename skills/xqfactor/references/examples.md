@@ -46,8 +46,9 @@ def _to_rq_frequency(frequency: str) -> str:
     """
     return {
         "D": "1d",
-        "W": "1w",
+        "W-SUN": "1w",
         "min": "1m",
+        "ME": "1d",
     }.get(frequency, frequency)
 
 
@@ -173,6 +174,35 @@ forward_returns_df = FORWARD_RETURNS.evaluate(forward_context, cache)
 
 复用同一个 `cache` 再计算 `CLOSE`、`RETURNS` 或依赖它们的表达式时，可以复用已经
 读取的叶子值和中间结果。
+
+## 根据因子需求构造 RQData 上下文
+
+`get_defined_factor_periods()` 汇总当前仍存活的全部因子表达式节点。上下文构造函数
+不会自动读取该结果，应用可以选择是否把它作为历史和未来扩展量：
+
+```python
+from xqfactor import get_defined_factor_periods
+from xqfactor.providers.rqdata import RQDataContextBuilder
+
+
+periods = get_defined_factor_periods()
+context_builder = RQDataContextBuilder()
+rqdata_context = context_builder.build(
+    start_date="2025-01-01",
+    end_date="2025-06-30",
+    universe=("000001.XSHE", "600000.XSHG"),
+    market="cn",
+    type="stock",
+    frequency="D",
+    history_period=periods.max_history,
+    future_period=periods.max_future,
+)
+result = FORWARD_RETURNS.evaluate(rqdata_context, cache)
+```
+
+`history_period` 和 `future_period` 均按目标频率的 bar 数计算。当前支持中国股票
+`D`、`min`、`W-SUN` 和 `ME`；分钟轴包含每个交易日的 09:31—11:30、
+13:01—15:00，周频和月频分别使用每周、每月的最后交易日。
 
 ## 固定公共类因子
 

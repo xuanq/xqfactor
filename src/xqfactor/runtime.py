@@ -1,4 +1,4 @@
-"""xqfactor 的显式求值上下文、定义指纹和执行缓存。"""
+"""xqfactor 的稳定定义指纹和执行缓存。"""
 
 from __future__ import annotations
 
@@ -13,9 +13,6 @@ from typing import Any, Mapping, Protocol
 
 import numpy as np
 import pandas as pd
-
-
-AssetId = str | int
 
 
 def _stable_callable(value: Any, stack: tuple[int, ...]) -> Any:
@@ -165,73 +162,6 @@ def stable_fingerprint(value: Any) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True)
-class EvaluationContext:
-    """一次因子求值使用的时间轴、资产池和数据语义。"""
-
-    time_index: tuple[Any, ...]
-    universe: tuple[AssetId, ...]
-    frequency: str
-    output_start: int = 0
-    output_end: int | None = None
-    semantics: tuple[tuple[str, Any], ...] = ()
-    provider_version: str = "default"
-
-    def __post_init__(self) -> None:
-        """标准化不可变字段并校验最终输出区间。"""
-        time_index = tuple(self.time_index)
-        universe = tuple(self.universe)
-        if not time_index:
-            raise ValueError("time_index 不能为空")
-        if not universe:
-            raise ValueError("universe 不能为空")
-        output_end = len(time_index) if self.output_end is None else self.output_end
-        if not 0 <= self.output_start < output_end <= len(time_index):
-            raise ValueError("output_start/output_end 超出 time_index 范围")
-        object.__setattr__(self, "time_index", time_index)
-        object.__setattr__(self, "universe", universe)
-        object.__setattr__(self, "output_end", output_end)
-        object.__setattr__(self, "semantics", tuple(self.semantics))
-
-    @property
-    def output_time_index(self) -> tuple[Any, ...]:
-        """返回最终结果对应的时间轴。"""
-        return self.time_index[self.output_start : self.output_end]
-
-    @property
-    def start_time(self) -> Any:
-        """返回最终结果起始时间。"""
-        return self.output_time_index[0]
-
-    @property
-    def end_time(self) -> Any:
-        """返回最终结果结束时间。"""
-        return self.output_time_index[-1]
-
-    def fingerprint(self) -> str:
-        """生成包含求值范围和数据版本的上下文指纹。"""
-        return stable_fingerprint(
-            {
-                "time_index": self.time_index,
-                "universe": self.universe,
-                "frequency": self.frequency,
-                "output_start": self.output_start,
-                "output_end": self.output_end,
-                "semantics": self.semantics,
-                "provider_version": self.provider_version,
-            }
-        )
-
-
-@dataclass(frozen=True)
-class LeafRequest:
-    """叶子因子的取数请求。"""
-
-    factor_name: str
-    context: EvaluationContext
-    definition_version: str
 
 
 @dataclass(frozen=True)

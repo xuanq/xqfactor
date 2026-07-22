@@ -2,23 +2,36 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from threading import RLock
 from typing import Any, Callable
+from weakref import WeakSet
 
 import numpy as np
 import pandas as pd
 
+from xqfactor.context import EvaluationContext, LeafRequest
 from xqfactor.runtime import (
     CacheKey,
-    EvaluationContext,
     ExecutionCache,
-    LeafRequest,
     MemoryCache,
     stable_fingerprint,
 )
 
 
 FactorFunction = Callable[..., pd.DataFrame]
+
+
+@dataclass(frozen=True)
+class FactorPeriodRequirements:
+    """当前存活因子表达式的最大历史和未来周期需求。"""
+
+    max_history: int
+    max_future: int
+
+
+_FACTOR_INSTANCES: WeakSet[AbstractFactor] = WeakSet()
+_FACTOR_INSTANCES_LOCK = RLock()
 
 
 def _as_factor(value: Any) -> AbstractFactor:
@@ -56,6 +69,17 @@ def _normalize_frame(
 
 class AbstractFactor:
     """所有因子表达式的基类。"""
+
+    def __new__(cls, *_args: Any, **_kwargs: Any) -> AbstractFactor:
+        """创建因子实例并登记到弱引用集合。
+
+        输入：具体因子子类构造函数接收的位置参数和关键字参数。
+        输出：已登记但不会被登记集合阻止垃圾回收的因子实例。
+        """
+        instance = super().__new__(cls)
+        with _FACTOR_INSTANCES_LOCK:
+            _FACTOR_INSTANCES.add(instance)
+        return instance
 
     def __add__(self, other: Any) -> AbstractFactor:
         return BinaryCombinedFactor(np.add, self, _as_factor(other))
@@ -192,6 +216,30 @@ class AbstractFactor:
         active_cache = cache if cache is not None else MemoryCache()
         value = self._evaluate(context, active_cache)
         return value.iloc[context.output_start : context.output_end].copy(deep=True)
+
+
+def get_defined_factor_periods() -> FactorPeriodRequirements:
+    """汇总当前仍存活的所有因子实例的周期需求。
+
+    输入：无。
+    输出：所有存活因子的最大历史和未来周期数；没有因子时两者均为 0。
+    """
+    # ************************************************************
+    # 在锁内把弱引用集合固化为强引用快照，避免统计过程中因子被回收导致
+    # 集合尺寸变化；快照只在本次函数调用期间持有这些实例。
+    # ************************************************************
+    with _FACTOR_INSTANCES_LOCK:
+        factors = tuple(_FACTOR_INSTANCES)
+    return FactorPeriodRequirements(
+        max_history=max(
+            (factor.required_history() for factor in factors),
+            default=0,
+        ),
+        max_future=max(
+            (factor.required_future() for factor in factors),
+            default=0,
+        ),
+    )
 
 
 class _CallableFactor(AbstractFactor):

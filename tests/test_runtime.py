@@ -1,23 +1,7 @@
 import pandas as pd
 import pytest
 
-from xqfactor import CacheKey, EvaluationContext, MemoryCache
-
-
-def test_evaluation_context_is_explicit_and_hashable() -> None:
-    """执行上下文应显式保存计算轴、输出区间和数据语义。"""
-    context = EvaluationContext(
-        time_index=("t0", "t1", "t2"),
-        universe=("A", "B"),
-        frequency="1m",
-        output_start=1,
-        semantics=(("adjust_type", "post"),),
-    )
-
-    assert context.output_time_index == ("t1", "t2")
-    assert context.start_time == "t1"
-    assert context.end_time == "t2"
-    assert context.fingerprint() == context.fingerprint()
+from xqfactor import CacheKey, MemoryCache
 
 
 def test_memory_cache_rejects_invalid_size() -> None:

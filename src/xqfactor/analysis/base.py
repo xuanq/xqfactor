@@ -7,8 +7,9 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from xqfactor.context import EvaluationContext
 from xqfactor.factor import AbstractFactor
-from xqfactor.runtime import EvaluationContext, ExecutionCache, MemoryCache
+from xqfactor.runtime import ExecutionCache, MemoryCache
 
 
 FactorInput = pd.DataFrame | AbstractFactor

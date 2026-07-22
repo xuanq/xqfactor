@@ -47,6 +47,10 @@ uv add "xqfactor[analysis]"
 - `ExecutionCache`：应用替换缓存实现时遵守的最小协议。
 - `AbstractFactor.required_history()` 和 `required_future()`：分别声明输出区间前后
   需要的历史与未来周期数。
+- `get_defined_factor_periods()`：返回当前存活因子实例的最大历史和未来周期需求。
+- `EvaluationContextBuilder`：数据源实现统一遵守的上下文构造协议。
+- `RQDataContextBuilder`：位于 `xqfactor.providers.rqdata`，生成中国股票日、分钟、
+  周、月频 `EvaluationContext`。
 
 `time_index` 是完整计算轴，必须包含 `REF`、收益率或窗口算子所需的历史和未来数据。
 `output_start` 和 `output_end` 只裁剪最终结果；历史前缀必须位于 `output_start` 之前，
@@ -68,6 +72,31 @@ resolver 接收 `LeafRequest` 并返回 DataFrame。返回前尽量按
 
 不要把 RQData、数据库、Parquet 或 DuckDB 逻辑加入 xqfactor 核心。完整的 RQData
 后复权 `CLOSE` 示例见 `references/examples.md`。
+
+需要按当前表达式需求构造 RQData 上下文时，先定义因子，再显式传入汇总结果：
+
+```python
+from xqfactor.providers.rqdata import RQDataContextBuilder
+
+
+periods = get_defined_factor_periods()
+context_builder = RQDataContextBuilder()
+context = context_builder.build(
+    start_date="2025-01-01",
+    end_date="2025-06-30",
+    universe=("000001.XSHE", "600000.XSHG"),
+    market="cn",
+    type="stock",
+    frequency="D",
+    history_period=periods.max_history,
+    future_period=periods.max_future,
+)
+```
+
+周期汇总只观察当前仍存活的因子实例；上下文构造函数不会自动读取汇总结果。
+`rqdatac` 仍由应用安装和初始化，`RQDataContextBuilder` 只在实际构造时延迟导入。
+公共 `frequency` 必须使用 Pandas 规范 `freqstr`，例如 `D`、`min`、`W-SUN`、
+`ME`；数据源自身的 `1d`、`1m`、`1w` 由 provider 或 resolver 映射。
 
 ## 使用与定义算子
 

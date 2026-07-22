@@ -47,6 +47,46 @@ cache = MemoryCache(maxsize=256)
 result = factor.evaluate(context, cache)
 ```
 
+## 使用 RQData 构造上下文
+
+应用项目安装并初始化 `rqdatac` 后，可以用 RQData 交易日历生成中国股票的日频、
+分钟频、周频和月频上下文：
+
+```bash
+uv add rqdatac
+```
+
+```python
+import rqdatac
+
+from xqfactor import get_defined_factor_periods
+from xqfactor.providers.rqdata import RQDataContextBuilder
+
+
+rqdatac.init()
+periods = get_defined_factor_periods()
+context_builder = RQDataContextBuilder()
+context = context_builder.build(
+    start_date="2025-01-01",
+    end_date="2025-06-30",
+    universe=("000001.XSHE", "600000.XSHG"),
+    market="cn",
+    type="stock",
+    frequency="D",
+    history_period=periods.max_history,
+    future_period=periods.max_future,
+)
+```
+
+`get_defined_factor_periods()` 汇总当前仍存活的全部因子实例，包括中间表达式节点；
+弱引用登记不会阻止不再使用的因子被回收。构造上下文时也可以忽略该汇总结果，直接传入
+其他非负周期数。当前 RQData 适配只实现 `market="cn"`、`type="stock"` 下的
+`D`、`min`、`W-SUN` 和 `ME`。
+
+`EvaluationContext.frequency` 必须使用 Pandas 规范 `freqstr`。例如日频、分钟、
+周频和月末频率分别使用 `D`、`min`、`W-SUN`、`ME`；RQData 的 `1d`、`1m`、
+`1w` 只应出现在数据源适配代码中。
+
 ## 使用未来收益
 
 `REF(X, n)` 中正数 `n` 引用过去值，负数 `n` 引用未来值；因此
@@ -122,7 +162,12 @@ def DEMEAN(factor: AbstractFactor) -> CombinedFactor:
 
 ## 代码阅读路径
 
-从应用创建 `LeafFactor` 开始，resolver 根据 `LeafRequest` 返回二维 DataFrame；
+上下文模型和构造协议位于 `context.py`；RQData 实现从 `providers/rqdata.py` 的
+`RQDataContextBuilder.build()` 开始，先用交易日历生成目标频率轴，再精确保留历史和
+未来 bar，并设置 `EvaluationContext` 的输出切片。`runtime.py` 只负责稳定指纹和缓存。
+因子周期汇总从 `factor.py` 的 `AbstractFactor.__new__()` 自动弱引用登记开始，由
+`get_defined_factor_periods()` 汇总存活节点需求。因子执行从应用创建 `LeafFactor`
+开始，resolver 根据 `LeafRequest` 返回二维 DataFrame；
 `operators.py` 和应用自定义构造函数把基础因子组合成表达式图；
 `factor.evaluate()` 递归查询 `MemoryCache`、计算子节点并统一对齐时间轴和资产轴，
 最后按 `EvaluationContext` 截取输出区间。检验流程从
