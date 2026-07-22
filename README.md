@@ -47,6 +47,36 @@ cache = MemoryCache(maxsize=256)
 result = factor.evaluate(context, cache)
 ```
 
+## 使用未来收益
+
+`REF(X, n)` 中正数 `n` 引用过去值，负数 `n` 引用未来值；因此
+`REF(STOCK_RETURN, -1)` 会把 `t+1` 的收益对齐到 `t`。未来因子的依赖需求同时包含
+`required_history()` 和 `required_future()`：
+
+```python
+from xqfactor import REF
+
+
+FORWARD_RETURNS = REF(STOCK_RETURN, -1)
+assert FORWARD_RETURNS.required_history() == 0
+assert FORWARD_RETURNS.required_future() == 1
+```
+
+完整 `time_index` 必须在 `output_start` 前提供历史数据、在 `output_end` 后预留未来
+数据，最终输出不应包含预留尾部：
+
+```python
+context = EvaluationContext(
+    time_index=("t0", "t1", "t2", "t3"),
+    universe=("000001.SZ",),
+    frequency="D",
+    output_end=3,
+)
+```
+
+如果历史轴或未来轴不足，`evaluate()` 会抛出 `ValueError`，避免将边界缺失误判为有效
+输出。resolver 原本返回的 `NaN` 会按原样保留。
+
 ## 固定公共类因子
 
 使用 `FIX` 可以把任意因子表达式固定到指定资产，再广播到当前 universe。固定过程

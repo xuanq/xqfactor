@@ -118,6 +118,10 @@ class AbstractFactor:
         """返回该因子需要的历史周期数。"""
         return 0
 
+    def required_future(self) -> int:
+        """返回该因子需要的未来周期数。"""
+        return 0
+
     def definition(self) -> tuple[Any, ...]:
         """返回用于缓存指纹的因子定义。"""
         return (self.__class__.__name__,)
@@ -162,6 +166,29 @@ class AbstractFactor:
         输入：显式执行上下文和可选的可复用执行缓存。
         输出：index 为 output_time_index、columns 为 universe 的 DataFrame。
         """
+        # ************************************************************
+        # 因子需要完整计算轴在 output_start 前提供历史数据、在 output_end
+        # 后预留未来数据；提前校验可将边界导致的静默 NaN 转换为配置错误。
+        # ************************************************************
+        output_end = (
+            len(context.time_index)
+            if context.output_end is None
+            else context.output_end
+        )
+        required_history = self.required_history()
+        required_future = self.required_future()
+        available_history = context.output_start
+        available_future = len(context.time_index) - output_end
+        if required_history > available_history:
+            raise ValueError(
+                f"因子需要 {required_history} 个历史周期，"
+                f"但 output_start 前仅提供 {available_history} 个"
+            )
+        if required_future > available_future:
+            raise ValueError(
+                f"因子需要 {required_future} 个未来周期，"
+                f"但 time_index 在 output_end 后仅提供 {available_future} 个"
+            )
         active_cache = cache if cache is not None else MemoryCache()
         value = self._evaluate(context, active_cache)
         return value.iloc[context.output_start : context.output_end].copy(deep=True)
@@ -252,6 +279,10 @@ class FixedFactor(AbstractFactor):
         """返回被固定因子的历史需求。"""
         return self.factor.required_history()
 
+    def required_future(self) -> int:
+        """返回被固定因子的未来需求。"""
+        return self.factor.required_future()
+
     def definition(self) -> tuple[Any, ...]:
         """返回目标资产和被固定因子的定义。"""
         return (self.__class__.__name__, self.asset, self.factor.definition())
@@ -301,6 +332,10 @@ class UnaryCombinedFactor(_CallableFactor):
         """返回子因子的历史需求。"""
         return self.factor.required_history()
 
+    def required_future(self) -> int:
+        """返回子因子的未来需求。"""
+        return self.factor.required_future()
+
     def definition(self) -> tuple[Any, ...]:
         """返回计算函数、参数和依赖因子定义。"""
         return (
@@ -342,6 +377,10 @@ class BinaryCombinedFactor(_CallableFactor):
     def required_history(self) -> int:
         """返回两个输入因子中的最大历史需求。"""
         return max(self.arg1.required_history(), self.arg2.required_history())
+
+    def required_future(self) -> int:
+        """返回两个输入因子中的最大未来需求。"""
+        return max(self.arg1.required_future(), self.arg2.required_future())
 
     def definition(self) -> tuple[Any, ...]:
         """返回计算函数、参数和两个依赖因子定义。"""
@@ -389,6 +428,10 @@ class CombinedFactor(_CallableFactor):
         """返回所有输入因子的最大历史需求。"""
         return max(factor.required_history() for factor in self.factors)
 
+    def required_future(self) -> int:
+        """返回所有输入因子的最大未来需求。"""
+        return max(factor.required_future() for factor in self.factors)
+
     def definition(self) -> tuple[Any, ...]:
         """返回计算函数、参数和全部依赖因子定义。"""
         return (
@@ -417,8 +460,20 @@ class RefFactor(AbstractFactor):
         self.periods = periods
 
     def required_history(self) -> int:
-        """返回引用周期和子因子历史需求之和。"""
-        return self.factor.required_history() + abs(self.periods)
+        """返回时间引用变换后的历史需求。
+
+        输入：子因子的历史需求和当前引用周期。
+        输出：相对输出时点需要向前读取的周期数；未来引用不会被计入。
+        """
+        return max(0, self.periods + self.factor.required_history())
+
+    def required_future(self) -> int:
+        """返回时间引用变换后的未来需求。
+
+        输入：子因子的未来需求和当前引用周期。
+        输出：相对输出时点需要向后读取的周期数；历史引用不会被计入。
+        """
+        return max(0, self.factor.required_future() - self.periods)
 
     def definition(self) -> tuple[Any, ...]:
         """返回引用周期和依赖因子定义。"""
@@ -429,7 +484,11 @@ class RefFactor(AbstractFactor):
         context: EvaluationContext,
         cache: ExecutionCache,
     ) -> pd.DataFrame:
-        """沿时间轴移动子因子值。"""
+        """沿时间轴移动子因子值。
+
+        正周期通过 ``shift(periods)`` 将过去值对齐到当前时点，负周期将未来值
+        对齐到当前时点；返回 DataFrame 形状和两条轴保持不变。
+        """
         return self.factor._evaluate(context, cache).shift(self.periods)
 
 
@@ -456,6 +515,10 @@ class RollingWindowFactor(_CallableFactor):
     def required_history(self) -> int:
         """返回窗口新增的历史需求和子因子历史需求。"""
         return self.factor.required_history() + self.window - 1
+
+    def required_future(self) -> int:
+        """返回子因子的未来需求。"""
+        return self.factor.required_future()
 
     def definition(self) -> tuple[Any, ...]:
         """返回窗口函数、长度、参数和依赖因子定义。"""
@@ -510,6 +573,10 @@ class CombinedRollingWindowFactor(_CallableFactor):
         return max(factor.required_history() for factor in self.factors) + (
             self.window - 1
         )
+
+    def required_future(self) -> int:
+        """返回所有子因子中的最大未来需求。"""
+        return max(factor.required_future() for factor in self.factors)
 
     def definition(self) -> tuple[Any, ...]:
         """返回窗口函数、长度和全部依赖因子定义。"""

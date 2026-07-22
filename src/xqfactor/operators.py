@@ -332,7 +332,10 @@ def AS_FLOAT(factor: AbstractFactor) -> UnaryCombinedFactor:
 
 
 def REF(factor: AbstractFactor, n: int) -> AbstractFactor:
-    """引用 n 个周期前或后的因子值。"""
+    """引用 n 个周期前或后的因子值。
+
+    正数表示过去值，负数表示未来值；例如 ``REF(X, -1)`` 将 ``t+1`` 的值
+    对齐到 ``t``。"""
     if n == 0:
         return factor
     return RefFactor(factor, n)
@@ -348,7 +351,7 @@ def FIX(factor: AbstractFactor, asset: str | int) -> FixedFactor:
 
 
 def DELAY(factor: AbstractFactor, n: int) -> AbstractFactor:
-    """REF 的别名。"""
+    """REF 的别名，正数引用过去、负数引用未来。"""
     return REF(factor, n)
 
 

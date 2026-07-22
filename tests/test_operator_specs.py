@@ -82,6 +82,20 @@ def test_custom_rolling_operator_preserves_history_contract() -> None:
     assert list(result["A"]) == [1.5, 2.5]
 
 
+def test_rolling_operator_propagates_future_requirement_without_history_inflation() -> (
+    None
+):
+    """窗口算子应保留未来需求，并只增加窗口所需的历史周期。"""
+    factor = RollingWindowFactor(
+        rolling_mean,
+        2,
+        RefFactor(_leaf("close"), -1),
+    )
+
+    assert factor.required_history() == 1
+    assert factor.required_future() == 1
+
+
 def test_combined_rolling_operator_receives_window_and_all_full_axis_values() -> None:
     """多因子窗口算子应按顺序接收窗口及完整计算轴上的全部值。"""
     received: dict[str, object] = {}

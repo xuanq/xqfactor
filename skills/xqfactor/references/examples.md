@@ -104,7 +104,8 @@ CLOSE = LeafFactor(
 
 ## 组合 RETURNS 因子并执行
 
-`PCT_CHANGE(X, n)` 的语义是 `X / REF(X, n) - 1`。
+`PCT_CHANGE(X, n)` 的语义是 `X / REF(X, n) - 1`。`REF(X, n)` 中正数表示过去值，
+负数表示未来值；例如 `REF(STOCK_RETURN, -1)` 会把下一期收益对齐到当前期。
 
 ```python
 import pandas as pd
@@ -136,6 +137,39 @@ context = EvaluationContext(
 
 returns_df = RETURNS.evaluate(context, cache)
 ```
+
+未来收益需要在完整时间轴尾部预留未来数据，并通过 `output_end` 排除预留行；其他
+历史窗口则需要在 `output_start` 前预留对应历史周期：
+
+```python
+from xqfactor import REF
+
+
+FORWARD_RETURNS = REF(RETURNS, -1)
+assert FORWARD_RETURNS.required_history() == 0
+assert FORWARD_RETURNS.required_future() == 1
+
+forward_context = EvaluationContext(
+    time_index=tuple(
+        pd.to_datetime(
+            [
+                "2025-01-02",
+                "2025-01-03",
+                "2025-01-06",
+                "2025-01-07",
+            ]
+        )
+    ),
+    universe=("000001.XSHE", "600000.XSHG"),
+    frequency="D",
+    output_end=3,
+)
+forward_returns_df = FORWARD_RETURNS.evaluate(forward_context, cache)
+```
+
+如果 `time_index` 在 `output_start` 前或 `output_end` 后没有足够的周期，`evaluate()`
+会抛出 `ValueError`，而不是静默返回由边界缺失导致的 `NaN`。resolver 原本返回的
+`NaN` 会保留。
 
 复用同一个 `cache` 再计算 `CLOSE`、`RETURNS` 或依赖它们的表达式时，可以复用已经
 读取的叶子值和中间结果。

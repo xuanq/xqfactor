@@ -45,9 +45,13 @@ uv add "xqfactor[analysis]"
 - `FixedFactor`：在指定资产的单标的上下文中计算因子并广播到当前 universe。
 - `MemoryCache`：在完全相同的因子定义和执行上下文下复用叶子及中间结果。
 - `ExecutionCache`：应用替换缓存实现时遵守的最小协议。
+- `AbstractFactor.required_history()` 和 `required_future()`：分别声明输出区间前后
+  需要的历史与未来周期数。
 
-`time_index` 是完整计算轴，必须包含 `REF`、收益率或窗口算子所需的历史数据。
-`output_start` 和 `output_end` 只裁剪最终结果。
+`time_index` 是完整计算轴，必须包含 `REF`、收益率或窗口算子所需的历史和未来数据。
+`output_start` 和 `output_end` 只裁剪最终结果；历史前缀必须位于 `output_start` 之前，
+未来尾部必须位于 `output_end` 之后。若任一侧不足，`evaluate()` 会抛出 `ValueError`；
+resolver 原本返回的 `NaN` 会保留。
 
 ## 定义叶子因子
 
@@ -74,6 +78,10 @@ resolver 接收 `LeafRequest` 并返回 DataFrame。返回前尽量按
 RETURNS = PCT_CHANGE(CLOSE, 1)
 ALPHA = RANK(RETURNS) * -1
 ```
+
+`REF(X, n)` 的正数表示过去值，负数表示未来值；`REF(X, -1)` 将 `t+1` 的值对齐
+到 `t`。因子表达式分别通过 `required_history()` 和 `required_future()` 声明两侧
+依赖，不能把未来周期计入历史需求。
 
 使用 `FIX` 将任意因子固定到一个公共资产，再广播到当前 universe：
 

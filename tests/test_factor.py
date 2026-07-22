@@ -13,13 +13,17 @@ from xqfactor import (
 )
 
 
-def _context(output_start: int = 0) -> EvaluationContext:
+def _context(
+    output_start: int = 0,
+    output_end: int | None = None,
+) -> EvaluationContext:
     """构造包含历史数据的测试上下文。"""
     return EvaluationContext(
         time_index=("t0", "t1", "t2"),
         universe=("A", "B"),
         frequency="D",
         output_start=output_start,
+        output_end=output_end,
     )
 
 
@@ -78,6 +82,115 @@ def test_ref_uses_history_and_returns_requested_slice() -> None:
 
     assert list(value.index) == ["t1", "t2"]
     assert list(value["A"]) == [1.0, 2.0]
+
+
+def test_ref_negative_period_aligns_future_value_to_current_time() -> None:
+    """负周期 REF 应将下一期值对齐到当前时间。"""
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回形状为 (4 个时间点, 1 个资产) 的非单调测试值。"""
+        return pd.DataFrame(
+            {"A": [10.0, 20.0, 40.0, 80.0]},
+            index=request.context.time_index,
+        )
+
+    context = EvaluationContext(
+        time_index=("t0", "t1", "t2", "t3"),
+        universe=("A",),
+        frequency="D",
+        output_end=3,
+    )
+    value = REF(LeafFactor("value", resolver), -1).evaluate(context)
+
+    assert list(value["A"]) == [20.0, 40.0, 80.0]
+
+
+def test_forward_returns_propagate_history_and_future_requirements() -> None:
+    """未来收益应抵消底层收益的历史需求，并声明未来尾部需求。"""
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回形状为 (5 个时间点, 1 个资产) 的测试收盘价。"""
+        return pd.DataFrame(
+            {"A": [100.0, 110.0, 100.0, 120.0, 90.0]},
+            index=request.context.time_index,
+        )
+
+    close = LeafFactor("close", resolver)
+    forward_returns = REF(PCT_CHANGE(close, 1), -1)
+    context = EvaluationContext(
+        time_index=("t0", "t1", "t2", "t3", "t4"),
+        universe=("A",),
+        frequency="D",
+        output_end=4,
+    )
+
+    assert forward_returns.required_history() == 0
+    assert forward_returns.required_future() == 1
+    value = forward_returns.evaluate(context)
+
+    assert list(value.index) == ["t0", "t1", "t2", "t3"]
+    assert list(value["A"]) == pytest.approx([0.1, -1.0 / 11.0, 0.2, -0.25])
+
+
+def test_nested_future_ref_propagates_signed_requirements() -> None:
+    """嵌套未来引用应按有符号周期累计未来需求。"""
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回用于检查需求元数据的空二维测试表。"""
+        return pd.DataFrame(
+            index=request.context.time_index,
+            columns=request.context.universe,
+        )
+
+    factor = REF(REF(LeafFactor("value", resolver), -1), -1)
+
+    assert factor.required_history() == 0
+    assert factor.required_future() == 2
+
+
+def test_future_factor_rejects_context_without_future_tail() -> None:
+    """未来因子在计算轴没有预留未来数据时应明确报错。"""
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回与上下文一致的测试值。"""
+        return pd.DataFrame(
+            1.0,
+            index=request.context.time_index,
+            columns=request.context.universe,
+        )
+
+    with pytest.raises(ValueError, match="未来周期"):
+        REF(LeafFactor("value", resolver), -1).evaluate(_context())
+
+
+def test_historical_factor_rejects_context_without_history_prefix() -> None:
+    """历史因子在输出起点没有预留历史数据时应明确报错。"""
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回与上下文一致的测试值。"""
+        return pd.DataFrame(
+            1.0,
+            index=request.context.time_index,
+            columns=request.context.universe,
+        )
+
+    with pytest.raises(ValueError, match="历史周期"):
+        REF(LeafFactor("value", resolver), 1).evaluate(_context())
+
+
+def test_original_nan_is_preserved() -> None:
+    """输入数据原本的 NaN 不应被边界校验误判为轴不足。"""
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回包含原始缺失值的测试数据。"""
+        return pd.DataFrame(
+            {"A": [float("nan"), 1.0, 2.0]},
+            index=request.context.time_index,
+        )
+
+    value = LeafFactor("value", resolver).evaluate(_context())
+
+    assert pd.isna(value.loc["t0", "A"])
 
 
 def test_leaf_result_is_aligned_to_context_axes() -> None:
