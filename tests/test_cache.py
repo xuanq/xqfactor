@@ -1,5 +1,7 @@
-import pandas as pd
+from dataclasses import replace
 from functools import partial
+
+import pandas as pd
 
 from xqfactor import (
     CombinedFactor,
@@ -11,13 +13,25 @@ from xqfactor import (
 )
 
 
-def _context(provider_version: str = "v1") -> EvaluationContext:
-    """构造指定数据版本的执行上下文。"""
+_TIME_INDEX = tuple(
+    pd.date_range(
+        "2024-01-02 15:00",
+        periods=2,
+        freq="D",
+        tz="Asia/Shanghai",
+    )
+)
+
+
+def _context(calendar_version: str = "v1") -> EvaluationContext:
+    """构造指定日历版本的执行上下文。"""
     return EvaluationContext(
-        time_index=("t0", "t1"),
+        time_index=_TIME_INDEX,
+        previous_time="2024-01-01 15:00",
         universe=("A", "B"),
+        primary_exchange="XSHG",
         frequency="D",
-        provider_version=provider_version,
+        calendar_version=calendar_version,
     )
 
 
@@ -43,8 +57,8 @@ def test_same_context_reuses_leaf_value() -> None:
     assert calls == 1
 
 
-def test_provider_version_and_universe_isolate_cache() -> None:
-    """数据版本或资产池不同都不能错误复用缓存。"""
+def test_calendar_version_and_universe_isolate_cache() -> None:
+    """日历版本或资产池不同都不能错误复用缓存。"""
     calls = 0
 
     def resolver(request: LeafRequest) -> pd.DataFrame:
@@ -63,10 +77,42 @@ def test_provider_version_and_universe_isolate_cache() -> None:
     factor.evaluate(_context("v2"), cache)
     factor.evaluate(
         EvaluationContext(
-            time_index=("t0", "t1"),
+            time_index=_TIME_INDEX,
+            previous_time="2024-01-01 15:00",
             universe=("A",),
+            primary_exchange="XSHG",
             frequency="D",
         ),
+        cache,
+    )
+
+    assert calls == 3
+
+
+def test_main_clock_identity_isolates_cache() -> None:
+    """首周期边界或主交易所变化时不得复用叶子缓存。"""
+    calls = 0
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """记录调用并返回与请求轴一致的常数 DataFrame。"""
+        nonlocal calls
+        calls += 1
+        return pd.DataFrame(
+            1.0,
+            index=request.context.time_index,
+            columns=request.context.universe,
+        )
+
+    factor = LeafFactor("close", resolver)
+    cache = MemoryCache()
+    context = _context()
+    factor.evaluate(context, cache)
+    factor.evaluate(
+        replace(context, previous_time="2023-12-31 15:00"),
+        cache,
+    )
+    factor.evaluate(
+        replace(context, primary_exchange="XSHE"),
         cache,
     )
 

@@ -13,6 +13,16 @@ from xqfactor import (
 )
 
 
+_TIME_INDEX = tuple(
+    pd.date_range(
+        "2024-01-02 15:00",
+        periods=3,
+        freq="D",
+        tz="Asia/Shanghai",
+    )
+)
+
+
 def _leaf(name: str, offset: float = 0.0) -> LeafFactor:
     """创建带指定偏移量的测试叶子因子。"""
 
@@ -34,8 +44,10 @@ def _leaf(name: str, offset: float = 0.0) -> LeafFactor:
 def _context(output_start: int = 0) -> EvaluationContext:
     """创建自定义算子测试上下文。"""
     return EvaluationContext(
-        time_index=("t0", "t1", "t2"),
+        time_index=_TIME_INDEX,
+        previous_time="2024-01-01 15:00",
         universe=("A", "B"),
+        primary_exchange="XSHG",
         frequency="D",
         output_start=output_start,
     )
@@ -69,8 +81,8 @@ def test_custom_operator_can_be_reused_with_different_factors() -> None:
     first_value = first.evaluate(_context())
     second_value = second.evaluate(_context())
 
-    assert list(first_value.loc["t0"]) == [-0.5, 0.5]
-    assert list(second_value.loc["t0"]) == [-0.5, 0.5]
+    assert list(first_value.loc[_TIME_INDEX[0]]) == [-0.5, 0.5]
+    assert list(second_value.loc[_TIME_INDEX[0]]) == [-0.5, 0.5]
 
 
 def test_custom_rolling_operator_preserves_history_contract() -> None:
@@ -120,11 +132,11 @@ def test_combined_rolling_operator_receives_window_and_all_full_axis_values() ->
     result = factor.evaluate(_context(output_start=1))
 
     assert received["window"] == 2
-    assert list(received["first_index"]) == ["t0", "t1", "t2"]
-    assert list(received["second_index"]) == ["t0", "t1", "t2"]
+    assert list(received["first_index"]) == list(_TIME_INDEX)
+    assert list(received["second_index"]) == list(_TIME_INDEX)
     assert list(result["A"]) == [-10.0, -10.0]
     assert list(result["B"]) == [-10.0, -10.0]
-    assert list(result.index) == ["t1", "t2"]
+    assert list(result.index) == list(_TIME_INDEX[1:])
 
 
 def test_combined_rolling_operator_propagates_max_history() -> None:

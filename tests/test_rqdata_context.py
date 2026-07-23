@@ -3,16 +3,21 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from xqfactor import EvaluationContext, EvaluationContextBuilder
-from xqfactor.providers.rqdata import RQDataContextBuilder
+from xqfactor import (
+    EVALUATION_TIMEZONE,
+    EvaluationContext,
+    EvaluationContextBuilder,
+    TradingCalendar,
+)
+from xqfactor.providers.rqdata import RQDataTradingCalendar
 
 
-class FakeTradingCalendar:
-    """使用工作日模拟 RQData 中国市场交易日历。"""
+class FakeTradingDateProvider:
+    """使用工作日模拟 RQData 中国市场交易日接口。"""
 
     def __init__(self) -> None:
         """创建覆盖测试日期范围的工作日日历。"""
-        self.trading_dates = pd.bdate_range("2023-01-01", "2025-12-31")
+        self.trading_dates = pd.bdate_range("2022-01-01", "2027-12-31")
 
     def get_trading_dates(
         self,
@@ -35,115 +40,189 @@ class FakeTradingCalendar:
 
 
 @pytest.fixture
-def calendar() -> FakeTradingCalendar:
-    """返回测试使用的内存交易日历。"""
-    return FakeTradingCalendar()
+def calendar() -> RQDataTradingCalendar:
+    """返回注入内存交易日接口的 RQData 交易日历。"""
+    return RQDataTradingCalendar(
+        api=FakeTradingDateProvider(),
+        version="fake-rqdata-v1",
+    )
 
 
 @pytest.fixture
-def builder(calendar: FakeTradingCalendar) -> RQDataContextBuilder:
-    """返回注入内存交易日历的 RQData 上下文构造器。"""
-    return RQDataContextBuilder(api=calendar)
+def builder(calendar: RQDataTradingCalendar) -> EvaluationContextBuilder:
+    """返回使用 RQData 交易日历的通用上下文构造器。"""
+    return EvaluationContextBuilder(calendar)
+
+
+def _timestamp(value: str) -> pd.Timestamp:
+    """构造上海时区测试时间。"""
+    return pd.Timestamp(value, tz=EVALUATION_TIMEZONE)
+
+
+def test_rqdata_calendar_implements_trading_calendar_protocol(
+    calendar: RQDataTradingCalendar,
+) -> None:
+    """RQData 适配器应实现可插拔 TradingCalendar 协议。"""
+    assert isinstance(calendar, TradingCalendar)
 
 
 def test_build_daily_context_with_exact_period_extensions(
-    builder: RQDataContextBuilder,
+    builder: EvaluationContextBuilder,
 ) -> None:
-    """日频上下文应按交易日精确保留历史和未来 bar。"""
-    context_builder: EvaluationContextBuilder = builder
-    assert isinstance(builder, EvaluationContextBuilder)
-    context = context_builder.build(
+    """日频上下文应使用实际收盘时刻并精确保留两侧 bar。"""
+    context = builder.build(
         start_date="2024-01-08",
         end_date="2024-01-10",
-        universe=("000001.XSHE", "600000.XSHG"),
+        universe=("000001.XSHE", "0700.HK", "ETH.binance"),
+        primary_exchange="XSHG",
         history_period=2,
         future_period=1,
     )
 
     assert isinstance(context, EvaluationContext)
     assert context.frequency == "D"
+    assert context.primary_exchange == "XSHG"
+    assert context.previous_time == _timestamp("2024-01-03 15:00")
     assert context.time_index == tuple(
         pd.to_datetime(
             [
-                "2024-01-04",
-                "2024-01-05",
-                "2024-01-08",
-                "2024-01-09",
-                "2024-01-10",
-                "2024-01-11",
+                "2024-01-04 15:00",
+                "2024-01-05 15:00",
+                "2024-01-08 15:00",
+                "2024-01-09 15:00",
+                "2024-01-10 15:00",
+                "2024-01-11 15:00",
             ]
-        )
+        ).tz_localize(EVALUATION_TIMEZONE)
     )
     assert context.output_start == 2
     assert context.output_end == 5
     assert context.output_time_index == tuple(
-        pd.to_datetime(["2024-01-08", "2024-01-09", "2024-01-10"])
+        pd.to_datetime(
+            [
+                "2024-01-08 15:00",
+                "2024-01-09 15:00",
+                "2024-01-10 15:00",
+            ]
+        ).tz_localize(EVALUATION_TIMEZONE)
     )
-    assert dict(context.semantics) == {"market": "cn", "type": "stock"}
-    assert context.provider_version == "rqdata"
+    assert context.calendar_version == "fake-rqdata-v1"
+
+
+def test_build_requested_cross_session_minute_example(
+    builder: EvaluationContextBuilder,
+) -> None:
+    """分钟主时钟应精确生成 2026-07-20 至 07-22 的 30/5 扩展示例。"""
+    context = builder.build(
+        start_date="2026-07-20",
+        end_date="2026-07-22",
+        universe=(
+            "600519.XSHG",
+            "0700.HK",
+            "000660.KS",
+            "SKHY.nasdaq",
+            "ETH.binance",
+        ),
+        primary_exchange="XSHG",
+        frequency="min",
+        history_period=30,
+        future_period=5,
+    )
+
+    assert context.previous_time == _timestamp("2026-07-17 14:30")
+    assert context.time_index[0] == _timestamp("2026-07-17 14:31")
+    assert context.output_time_index[0] == _timestamp("2026-07-20 09:31")
+    assert context.output_time_index[-1] == _timestamp("2026-07-22 15:00")
+    assert context.time_index[-1] == _timestamp("2026-07-23 09:35")
+    assert len(context.output_time_index) == 720
+    assert len(context.time_index) == 755
+    assert context.output_start == 30
+    assert context.output_end == 750
 
 
 def test_build_minute_context_uses_cn_stock_sessions(
-    builder: RQDataContextBuilder,
+    builder: EvaluationContextBuilder,
 ) -> None:
-    """分钟上下文应生成 240 个日内 bar 并跨交易日扩展。"""
+    """分钟上下文应生成 240 个日内 bar 并跨午休与交易日扩展。"""
     context = builder.build(
         start_date="2024-01-08",
         end_date="2024-01-08",
         universe=("000001.XSHE",),
+        primary_exchange="XSHE",
         frequency="min",
         history_period=1,
         future_period=1,
     )
 
     assert len(context.time_index) == 242
-    assert context.time_index[0] == pd.Timestamp("2024-01-05 15:00:00")
-    assert context.output_time_index[0] == pd.Timestamp("2024-01-08 09:31:00")
-    assert context.output_time_index[119] == pd.Timestamp("2024-01-08 11:30:00")
-    assert context.output_time_index[120] == pd.Timestamp("2024-01-08 13:01:00")
-    assert context.output_time_index[-1] == pd.Timestamp("2024-01-08 15:00:00")
-    assert context.time_index[-1] == pd.Timestamp("2024-01-09 09:31:00")
+    assert context.previous_time == _timestamp("2024-01-05 14:59")
+    assert context.time_index[0] == _timestamp("2024-01-05 15:00")
+    assert context.output_time_index[0] == _timestamp("2024-01-08 09:31")
+    assert context.output_time_index[119] == _timestamp("2024-01-08 11:30")
+    assert context.output_time_index[120] == _timestamp("2024-01-08 13:01")
+    assert context.output_time_index[-1] == _timestamp("2024-01-08 15:00")
+    assert context.time_index[-1] == _timestamp("2024-01-09 09:31")
 
 
-def test_build_weekly_context_uses_last_trading_day(
-    builder: RQDataContextBuilder,
+def test_build_weekly_context_uses_last_trading_close(
+    builder: EvaluationContextBuilder,
 ) -> None:
-    """周频上下文应使用每个 W-SUN 周期的最后交易日。"""
+    """周频上下文应使用每个 W-SUN 周期最后交易日的收盘时刻。"""
     context = builder.build(
         start_date="2024-01-08",
         end_date="2024-01-21",
         universe=("000001.XSHE",),
+        primary_exchange="XSHG",
         frequency="W-SUN",
         history_period=1,
         future_period=1,
     )
 
     assert context.time_index == tuple(
-        pd.to_datetime(["2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26"])
+        pd.to_datetime(
+            [
+                "2024-01-05 15:00",
+                "2024-01-12 15:00",
+                "2024-01-19 15:00",
+                "2024-01-26 15:00",
+            ]
+        ).tz_localize(EVALUATION_TIMEZONE)
     )
     assert context.output_time_index == tuple(
-        pd.to_datetime(["2024-01-12", "2024-01-19"])
+        pd.to_datetime(["2024-01-12 15:00", "2024-01-19 15:00"]).tz_localize(
+            EVALUATION_TIMEZONE
+        )
     )
 
 
-def test_build_monthly_context_uses_last_trading_day(
-    builder: RQDataContextBuilder,
+def test_build_monthly_context_uses_last_trading_close(
+    builder: EvaluationContextBuilder,
 ) -> None:
-    """月频上下文应使用每个自然月的最后交易日。"""
+    """月频上下文应使用每个自然月最后交易日的收盘时刻。"""
     context = builder.build(
         start_date="2024-02-01",
         end_date="2024-03-31",
         universe=("000001.XSHE",),
+        primary_exchange="XSHG",
         frequency="ME",
         history_period=1,
         future_period=1,
     )
 
     assert context.time_index == tuple(
-        pd.to_datetime(["2024-01-31", "2024-02-29", "2024-03-29", "2024-04-30"])
+        pd.to_datetime(
+            [
+                "2024-01-31 15:00",
+                "2024-02-29 15:00",
+                "2024-03-29 15:00",
+                "2024-04-30 15:00",
+            ]
+        ).tz_localize(EVALUATION_TIMEZONE)
     )
     assert context.output_time_index == tuple(
-        pd.to_datetime(["2024-02-29", "2024-03-29"])
+        pd.to_datetime(["2024-02-29 15:00", "2024-03-29 15:00"]).tz_localize(
+            EVALUATION_TIMEZONE
+        )
     )
 
 
@@ -163,8 +242,8 @@ def test_build_monthly_context_uses_last_trading_day(
         ),
         ({"history_period": -1}, ValueError, "history_period"),
         ({"future_period": True}, ValueError, "future_period"),
-        ({"market": "invalid"}, ValueError, "market"),
-        ({"type": "invalid"}, ValueError, "type"),
+        ({"primary_exchange": ""}, ValueError, "primary_exchange"),
+        ({"primary_exchange": "XHKG"}, NotImplementedError, "XSHG 和 XSHE"),
         ({"frequency": "d"}, ValueError, "D"),
         ({"frequency": "1d"}, ValueError, "D"),
         ({"frequency": "1m"}, ValueError, "ME"),
@@ -173,22 +252,19 @@ def test_build_monthly_context_uses_last_trading_day(
         ({"frequency": "T"}, ValueError, "min"),
         ({"frequency": "tick"}, ValueError, "不是有效"),
         ({"frequency": "5min"}, NotImplementedError, "仅支持"),
-        ({"market": "hk"}, NotImplementedError, "中国市场股票"),
-        ({"type": "futures"}, NotImplementedError, "中国市场股票"),
     ],
 )
 def test_build_context_validates_inputs(
-    builder: RQDataContextBuilder,
+    builder: EvaluationContextBuilder,
     overrides: dict[str, object],
     error_type: type[Exception],
     message: str,
 ) -> None:
-    """上下文构造函数应区分非法参数和尚未实现的合法组合。"""
+    """通用构造器和日历适配器应分别校验公共参数及支持范围。"""
     arguments: dict[str, object] = {
         "start_date": "2024-01-08",
         "end_date": "2024-01-10",
-        "market": "cn",
-        "type": "stock",
+        "primary_exchange": "XSHG",
         "frequency": "D",
         "universe": ("000001.XSHE",),
     }
@@ -199,7 +275,7 @@ def test_build_context_validates_inputs(
 
 
 def test_build_context_rejects_range_without_target_bar(
-    builder: RQDataContextBuilder,
+    builder: EvaluationContextBuilder,
 ) -> None:
     """仅包含非交易日的日频范围应明确报错。"""
     with pytest.raises(ValueError, match="没有目标频率"):
@@ -207,4 +283,5 @@ def test_build_context_rejects_range_without_target_bar(
             start_date="2024-01-06",
             end_date="2024-01-07",
             universe=("000001.XSHE",),
+            primary_exchange="XSHG",
         )

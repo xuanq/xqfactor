@@ -3,9 +3,9 @@
 `xqfactor` 是数据源无关、统一使用 `pandas.DataFrame` 传递因子值的因子表达式、
 执行缓存和检验规范框架。
 
-核心包不依赖 `xqdata`、RQData、数据库或本地数据仓库。应用项目通过
-`LeafFactor` 的 resolver 实现实际取数；xqfactor 负责表达式组合、历史窗口需求、
-轴对齐、递归求值和相同执行上下文下的缓存复用。
+核心包不依赖 RQData、数据库或本地数据仓库。应用项目通过 `LeafFactor` resolver
+实现实际取数；xqfactor 负责主交易所计算轴、跨市场可得时间对齐、表达式组合、窗口
+需求、递归求值和相同执行上下文下的缓存复用。
 
 ## 安装
 
@@ -19,38 +19,14 @@ uv add xqfactor
 uv add "xqfactor[analysis]"
 ```
 
-## 基本用法
+## 主交易所计算时钟
 
-```python
-import pandas as pd
+`EvaluationContext` 的时间轴统一使用 `Asia/Shanghai`，每个时点表示主交易所 bar 的
+结束时刻。`primary_exchange` 只决定计算轴，不限制 universe；同一上下文可以包含中国、
+香港、韩国、美国和加密资产。
 
-from xqfactor import EvaluationContext, LeafFactor, LeafRequest, MemoryCache, RANK
-
-
-def load_close(request: LeafRequest) -> pd.DataFrame:
-    """由应用负责从 API、数据库或本地文件读取数据。"""
-    return pd.DataFrame(
-        [[1.0, 2.0], [2.0, 1.0]],
-        index=request.context.time_index,
-        columns=request.context.universe,
-    )
-
-
-CLOSE = LeafFactor("close", load_close)
-factor = RANK(CLOSE)
-context = EvaluationContext(
-    time_index=("2025-01-01", "2025-01-02"),
-    universe=("000001.SZ", "000002.SZ"),
-    frequency="D",
-)
-cache = MemoryCache(maxsize=256)
-result = factor.evaluate(context, cache)
-```
-
-## 使用 RQData 构造上下文
-
-应用项目安装并初始化 `rqdatac` 后，可以用 RQData 交易日历生成中国股票的日频、
-分钟频、周频和月频上下文：
+推荐通过交易日历构造上下文。应用安装并初始化 `rqdatac` 后，可以生成 XSHG、XSHE 的
+`D`、`min`、`W-SUN` 和 `ME` 主时钟：
 
 ```bash
 uv add rqdatac
@@ -59,82 +35,126 @@ uv add rqdatac
 ```python
 import rqdatac
 
-from xqfactor import get_defined_factor_periods
-from xqfactor.providers.rqdata import RQDataContextBuilder
+from xqfactor import EvaluationContextBuilder, get_defined_factor_periods
+from xqfactor.providers.rqdata import RQDataTradingCalendar
 
 
 rqdatac.init()
 periods = get_defined_factor_periods()
-context_builder = RQDataContextBuilder()
+context_builder = EvaluationContextBuilder(RQDataTradingCalendar())
 context = context_builder.build(
-    start_date="2025-01-01",
-    end_date="2025-06-30",
-    universe=("000001.XSHE", "600000.XSHG"),
-    market="cn",
-    type="stock",
-    frequency="D",
+    start_date="2026-07-20",
+    end_date="2026-07-22",
+    universe=(
+        "600519.XSHG",
+        "0700.HK",
+        "000660.KS",
+        "SKHY.nasdaq",
+        "ETH.binance",
+    ),
+    primary_exchange="XSHG",
+    frequency="min",
     history_period=periods.max_history,
     future_period=periods.max_future,
 )
 ```
 
-`get_defined_factor_periods()` 汇总当前仍存活的全部因子实例，包括中间表达式节点；
-弱引用登记不会阻止不再使用的因子被回收。构造上下文时也可以忽略该汇总结果，直接传入
-其他非负周期数。当前 RQData 适配只实现 `market="cn"`、`type="stock"` 下的
-`D`、`min`、`W-SUN` 和 `ME`。
+`history_period` 和 `future_period` 按主轴 bar 计数。构造器还会单独保存
+`previous_time`，使完整轴第一行也有明确的左开右闭周期
+`(previous_time, time_index[0]]`。
 
-`EvaluationContext.frequency` 必须使用 Pandas 规范 `freqstr`。例如日频、分钟、
-周频和月末频率分别使用 `D`、`min`、`W-SUN`、`ME`；RQData 的 `1d`、`1m`、
-`1w` 只应出现在数据源适配代码中。
+## 定义跨市场 LeafFactor
 
-## 使用未来收益
+资产识别、API 路由、复权方式和交易时段口径都由 resolver 决定。原始数据 index 必须
+使用观测真正完成或可得的时刻，而不是无时区自然日或 Kline 开始时刻。
 
-`REF(X, n)` 中正数 `n` 引用过去值，负数 `n` 引用未来值；因此
-`REF(STOCK_RETURN, -1)` 会把 `t+1` 的收益对齐到 `t`。未来因子的依赖需求同时包含
-`required_history()` 和 `required_future()`：
+`align_latest_observations()` 对每个主轴周期只保留最后一个非空观测；周期内没有新数据
+时返回 `NaN`，不会把任意久以前的旧价格前向填充：
 
 ```python
-from xqfactor import REF
+import pandas as pd
+
+from xqfactor import (
+    LeafFactor,
+    LeafRequest,
+    align_latest_observations,
+)
 
 
-FORWARD_RETURNS = REF(STOCK_RETURN, -1)
-assert FORWARD_RETURNS.required_history() == 0
-assert FORWARD_RETURNS.required_future() == 1
-```
+def load_close(request: LeafRequest) -> pd.DataFrame:
+    """按资产路由数据源并返回主时钟周期内最后可得价格。
 
-完整 `time_index` 必须在 `output_start` 前提供历史数据、在 `output_end` 后预留未来
-数据，最终输出不应包含预留尾部：
+    输入：包含混合市场 universe 和主交易所时钟的叶子请求。
+    输出：index 为完整主时钟、columns 为原始 universe 的收盘价 DataFrame。
+    """
+    context = request.context
 
-```python
-context = EvaluationContext(
-    time_index=("t0", "t1", "t2", "t3"),
-    universe=("000001.SZ",),
-    frequency="D",
-    output_end=3,
+    # ************************************************************
+    # 应用在此按资产后缀分组调用 rqdatac-cached、Schwab 和 Binance。
+    # 每个原始表形状为 (观测数, 分组资产数)，index 必须改为 bar 完成时刻；
+    # 多个表按 columns 拼接后变为 (全部观测时点并集, universe 子集)。
+    # ************************************************************
+    raw_observations = load_mixed_market_observations(context)
+    aligned = align_latest_observations(raw_observations, context)
+    return aligned.reindex(columns=context.universe)
+
+
+CLOSE = LeafFactor(
+    "close",
+    load_close,
+    definition_version="mixed-master-close-v1",
 )
 ```
 
-如果历史轴或未来轴不足，`evaluate()` 会抛出 `ValueError`，避免将边界缺失误判为有效
-输出。resolver 原本返回的 `NaN` 会按原样保留。
+若上海日频主轴时点为 15:00：
 
-## 固定公共类因子
+- 中国股票使用当天 15:00 收盘价；
+- 港股使用不晚于 15:00 的最后完成分钟价，不能使用 16:00 后才可得的正式收盘价；
+- 已收盘的韩国市场使用当天正式收盘价；
+- 美国股票使用该时点前最近一个主轴周期内已经完成的常规交易时段收盘；
+- Binance 必须按 Kline `close time` 判断是否已经完成。
 
-使用 `FIX` 可以把任意因子表达式固定到指定资产，再广播到当前 universe。固定过程
-在只包含目标资产的子上下文中求值，因此不会因为当前研究股票池变化而改变，适合指数或
-基准收益等公共类因子。
+需要各资产所在交易所正式日收盘时，应定义独立的 `SESSION_CLOSE` LeafFactor，不要改变
+主时钟 `CLOSE` 的无前视语义。路由、复权或交易时段口径变化时更新
+`LeafFactor.definition_version`。
+
+## 组合与执行
 
 ```python
-from xqfactor import FIX, PCT_CHANGE
+from xqfactor import MemoryCache, PCT_CHANGE, RANK, REF
 
 
 RETURNS = PCT_CHANGE(CLOSE, 1)
+ALPHA = RANK(RETURNS) * -1
+FORWARD_RETURNS = REF(RETURNS, -1)
+
+cache = MemoryCache(maxsize=256)
+alpha = ALPHA.evaluate(context, cache)
+```
+
+`REF(X, n)` 中正数引用过去，负数引用未来。完整 `time_index` 必须在
+`output_start` 前提供足够历史 bar，并在 `output_end` 后提供足够未来 bar；不足时
+`evaluate()` 会明确报错。
+
+`EvaluationContext` 指纹包含完整主时钟、`previous_time`、universe、主交易所、频率、
+输出切片和日历版本。数据源路由及价格定义由 LeafFactor 指纹隔离。
+
+## 固定公共类因子
+
+`FIX` 会在只包含目标资产的子上下文中计算表达式，再广播到当前 universe。子上下文保留
+主交易所、首周期边界和日历版本：
+
+```python
+from xqfactor import FIX
+
+
 CSI500_RETURNS = FIX(RETURNS, "000985.XSHG")
 EXCESS_RETURNS = RETURNS - CSI500_RETURNS
 ```
 
 ## 自定义算子
 
-自定义算子分为“与因子无关的 DataFrame 计算函数”和“表达式构造函数”两层：
+自定义算子分为纯 DataFrame 计算函数和表达式构造函数两层：
 
 ```python
 import pandas as pd
@@ -143,7 +163,7 @@ from xqfactor import AbstractFactor, CombinedFactor
 
 
 def cross_sectional_demean(frame: pd.DataFrame) -> pd.DataFrame:
-    """将每个时间截面的值减去截面均值。"""
+    """将每个时间截面的值减去该截面均值。"""
     return frame.sub(frame.mean(axis=1), axis=0)
 
 
@@ -154,22 +174,19 @@ def DEMEAN(factor: AbstractFactor) -> CombinedFactor:
 
 ## 职责边界
 
-- 本项目负责因子表达式图、Pandas/NumPy 基础算子、显式执行上下文和内存执行缓存。
-- 具体基础因子、在线 API、DolphinDB、Parquet、DuckDB 和全量市场数据由应用项目负责。
-- 执行缓存只复用完全相同上下文下的叶子数据和中间因子，不是本地数据仓库。
-- Polars、PyTorch 等库可在某个自定义算子内部按需使用，但不形成独立计算后端。
-- 标准化、去极值和中性化等预处理使用因子算子表达；检验器只负责统计分析。
+- 核心不解析资产命名，也不维护资产、交易所或数据源注册表。
+- `TradingCalendar` 只提供主交易所 bar 结束时刻；其他交易所可通过协议接入。
+- resolver 返回的时间索引必须带时区；核心会转换到上海时区后再对齐。
+- 执行缓存不是行情数据库，不负责长期数据存储或跨 universe 数据集管理。
+- Polars、PyTorch 可在单个自定义算子内部使用，但不形成独立计算后端。
 
 ## 代码阅读路径
 
-上下文模型和构造协议位于 `context.py`；RQData 实现从 `providers/rqdata.py` 的
-`RQDataContextBuilder.build()` 开始，先用交易日历生成目标频率轴，再精确保留历史和
-未来 bar，并设置 `EvaluationContext` 的输出切片。`runtime.py` 只负责稳定指纹和缓存。
-因子周期汇总从 `factor.py` 的 `AbstractFactor.__new__()` 自动弱引用登记开始，由
-`get_defined_factor_periods()` 汇总存活节点需求。因子执行从应用创建 `LeafFactor`
-开始，resolver 根据 `LeafRequest` 返回二维 DataFrame；
-`operators.py` 和应用自定义构造函数把基础因子组合成表达式图；
-`factor.evaluate()` 递归查询 `MemoryCache`、计算子节点并统一对齐时间轴和资产轴，
-最后按 `EvaluationContext` 截取输出区间。检验流程从
-`analysis/base.py` 的 `AbstractAnalyzer.analyze()` 开始，将因子表达式和检验器附加输入
-统一求值后，交给 `ic.py`、`quantile_return.py` 或 `regression.py` 中的具体检验器统计。
+从 `context.py` 的 `EvaluationContextBuilder.build()` 开始，交易日历生成候选 bar，
+构造器截取历史、输出和未来轴并单独保存 `previous_time`；
+`align_latest_observations()` 将 resolver 的可得时间观测分配到主轴周期。
+`providers/rqdata.py` 的 `RQDataTradingCalendar.get_bar_index()` 提供 XSHG、XSHE
+日历适配。因子执行从 `factor.py` 的 `AbstractFactor.evaluate()` 开始，递归计算并按
+时区化主轴和 universe 对齐，最后截取输出区间。检验流程从
+`analysis/base.py` 的 `AbstractAnalyzer.analyze()` 开始，共享同一个执行缓存后进入
+IC、分组收益或回归统计。

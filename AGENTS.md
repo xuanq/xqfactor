@@ -14,7 +14,7 @@
 ## 项目结构
 
 - `src/xqfactor/factor.py`：因子节点、`LeafFactor`、表达式求值和历史窗口需求。
-- `src/xqfactor/context.py`：`EvaluationContext`、`LeafRequest`、规范频率和构造协议。
+- `src/xqfactor/context.py`：主交易所 `EvaluationContext`、通用 builder、日历协议和跨市场可得时间对齐。
 - `src/xqfactor/runtime.py`：稳定指纹、缓存键和执行缓存协议。
 - `src/xqfactor/providers/`：RQData 等可选数据源的上下文构造实现。
 - `src/xqfactor/operators.py`：基于 Pandas/NumPy 的内置算子。
@@ -32,13 +32,17 @@
 
 - 叶子因子统一使用 `LeafFactor(name, resolver, definition_version="1")`。
 - resolver 接收 `LeafRequest`，返回 Pandas DataFrame。
-- DataFrame 的 index 为时间，columns 为资产；核心按上下文轴执行 `reindex`。
-- `EvaluationContext.time_index` 必须包含窗口算子和 `REF` 所需的历史区间。
+- DataFrame 的 index 为带时区时间，columns 为资产；核心转换到 Asia/Shanghai 后按上下文轴执行 `reindex`。
+- `EvaluationContext.time_index` 必须包含窗口算子和 `REF` 所需的历史、未来区间。
+- `EvaluationContext.previous_time` 必须是完整轴首行所属主轴周期的左边界。
+- `EvaluationContext.primary_exchange` 只决定计算轴，不限制 universe 中资产所属交易所。
 - `EvaluationContext.frequency` 必须使用 Pandas 规范 `freqstr`；数据源频率别名由
   provider 或 resolver 负责映射。
 - `output_start` 和 `output_end` 只控制最终输出切片，不控制叶子数据读取范围。
 - 因子值逻辑形状固定为 `(时间, 资产)`；发生形状、index 或 columns 转换时必须注释。
-- 缓存只在因子定义、完整上下文和 provider 版本一致时命中。
+- 缓存只在因子定义、完整主时钟、主交易所和日历版本一致时命中。
+- 跨市场原始观测按实际完成/可得时刻使用 `align_latest_observations()` 对齐；
+  每个主轴左开右闭周期内无新观测时保持 NaN，不跨周期前向填充。
 - 添加内置算子时，同时补充实现、公共导出和测试。
 - 自定义算子采用两层定义：纯 DataFrame 计算函数，以及返回
   `CombinedFactor`、`UnaryCombinedFactor`、`BinaryCombinedFactor` 或
@@ -111,9 +115,9 @@ uv run --with pyyaml python /Users/xuanqi/.codex/skills/.system/skill-creator/sc
 
 ## 代码阅读路径
 
-上下文模型与构造协议位于 `context.py`，具体数据源实现位于 `providers/`；
+上下文模型、通用 builder、日历协议和跨市场对齐位于 `context.py`，具体交易日历实现位于 `providers/`；
 `runtime.py` 只负责稳定指纹和缓存。从应用创建 `LeafFactor` 开始，resolver 根据
-`LeafRequest` 返回原始二维 DataFrame；
+`LeafRequest` 路由数据源，并把实际可得时间观测对齐为主时钟二维 DataFrame；
 `operators.py` 将基础因子组合成表达式图；`factor.evaluate()` 使用传入或临时创建的
 `MemoryCache`，未命中时递归计算子节点，统一对齐 `EvaluationContext` 的时间轴和资产轴，
 最后截取输出时间区间。检验流程从 `analysis/base.py` 的

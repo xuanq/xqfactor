@@ -1,8 +1,8 @@
 # xqfactor 使用示例
 
-## 依赖与初始化
+## 依赖与主时钟
 
-在使用 xqfactor 的应用项目中安装依赖：
+应用项目自行安装并初始化行情 API：
 
 ```bash
 uv add "xqfactor[analysis]"
@@ -11,444 +11,295 @@ uv add polars
 uv add torch
 ```
 
-`rqdatac`、Polars 和 PyTorch 都是应用依赖，不要加入 xqfactor 核心依赖。
+使用 RQData 交易日生成 XSHG 主时钟，但 universe 不受主交易所限制：
 
 ```python
 import rqdatac
 
-from xqfactor import MemoryCache
+from xqfactor import EvaluationContextBuilder, get_defined_factor_periods
+from xqfactor.providers.rqdata import RQDataTradingCalendar
 
 
 rqdatac.init()
-cache = MemoryCache(maxsize=256)
-```
-
-## 使用 RQData 定义后复权 CLOSE
-
-RQData 的 `get_price` 使用 `adjust_type="post"` 获取后复权行情。
-`expect_df=True` 时，多标的日线结果通常使用
-`(order_book_id, date)` MultiIndex。
-
-```python
-from typing import Any
-
-import pandas as pd
-import rqdatac
-
-from xqfactor import LeafFactor, LeafRequest
-
-
-def _to_rq_frequency(frequency: str) -> str:
-    """将应用频率转换为 rqdatac.get_price 支持的频率。
-
-    输入：EvaluationContext 中的频率字符串。
-    输出：RQData 使用的频率字符串。
-    """
-    return {
-        "D": "1d",
-        "W-SUN": "1w",
-        "min": "1m",
-        "ME": "1d",
-    }.get(frequency, frequency)
-
-
-def load_close(request: LeafRequest) -> pd.DataFrame:
-    """读取后复权收盘价并转换为时间乘资产的二维表。
-
-    输入：包含完整计算时间轴、universe 和频率的叶子请求。
-    输出：index 为完整时间轴、columns 为 universe 的 DataFrame。
-    """
-    context = request.context
-    semantics: dict[str, Any] = dict(context.semantics)
-    data = rqdatac.get_price(
-        order_book_ids=list(context.universe),
-        start_date=context.time_index[0],
-        end_date=context.time_index[-1],
-        frequency=_to_rq_frequency(context.frequency),
-        fields="close",
-        adjust_type="post",
-        skip_suspended=False,
-        expect_df=True,
-        market=semantics.get("market", "cn"),
-    )
-
-    if data is None or data.empty:
-        return pd.DataFrame(
-            index=pd.Index(context.time_index, name="datetime"),
-            columns=context.universe,
-            dtype=float,
-        )
-
-    # ************************************************************
-    # RQData 结果从 MultiIndex Series：
-    # (order_book_id, date/datetime) -> value
-    # 转换为 DataFrame (时间数, 资产数)：
-    # index=date/datetime，columns=order_book_id。
-    # ************************************************************
-    close = data["close"].unstack("order_book_id")
-    close.index = pd.to_datetime(close.index)
-    return close.reindex(
-        index=pd.DatetimeIndex(context.time_index),
-        columns=context.universe,
-    )
-
-
-CLOSE = LeafFactor(
-    name="close",
-    resolver=load_close,
-    definition_version="rqdata-post-v1",
-)
-```
-
-如果使用港股，把上下文语义设置为 `(("market", "hk"),)`；resolver 会把它传给
-`rqdatac.get_price`。
-
-## 组合 RETURNS 因子并执行
-
-`PCT_CHANGE(X, n)` 的语义是 `X / REF(X, n) - 1`。`REF(X, n)` 中正数表示过去值，
-负数表示未来值；例如 `REF(STOCK_RETURN, -1)` 会把下一期收益对齐到当前期。
-
-```python
-import pandas as pd
-
-from xqfactor import EvaluationContext, PCT_CHANGE
-
-
-RETURNS = PCT_CHANGE(CLOSE, 1)
-
-# time_index 包含 2025-01-02 这一期历史值。
-# output_start=1 表示最终结果从 2025-01-03 开始返回。
-context = EvaluationContext(
-    time_index=tuple(
-        pd.to_datetime(
-            [
-                "2025-01-02",
-                "2025-01-03",
-                "2025-01-06",
-                "2025-01-07",
-            ]
-        )
-    ),
-    universe=("000001.XSHE", "600000.XSHG"),
-    frequency="D",
-    output_start=1,
-    semantics=(("market", "cn"), ("adjust_type", "post")),
-    provider_version="rqdata-2025-07",
-)
-
-returns_df = RETURNS.evaluate(context, cache)
-```
-
-未来收益需要在完整时间轴尾部预留未来数据，并通过 `output_end` 排除预留行；其他
-历史窗口则需要在 `output_start` 前预留对应历史周期：
-
-```python
-from xqfactor import REF
-
-
-FORWARD_RETURNS = REF(RETURNS, -1)
-assert FORWARD_RETURNS.required_history() == 0
-assert FORWARD_RETURNS.required_future() == 1
-
-forward_context = EvaluationContext(
-    time_index=tuple(
-        pd.to_datetime(
-            [
-                "2025-01-02",
-                "2025-01-03",
-                "2025-01-06",
-                "2025-01-07",
-            ]
-        )
-    ),
-    universe=("000001.XSHE", "600000.XSHG"),
-    frequency="D",
-    output_end=3,
-)
-forward_returns_df = FORWARD_RETURNS.evaluate(forward_context, cache)
-```
-
-如果 `time_index` 在 `output_start` 前或 `output_end` 后没有足够的周期，`evaluate()`
-会抛出 `ValueError`，而不是静默返回由边界缺失导致的 `NaN`。resolver 原本返回的
-`NaN` 会保留。
-
-复用同一个 `cache` 再计算 `CLOSE`、`RETURNS` 或依赖它们的表达式时，可以复用已经
-读取的叶子值和中间结果。
-
-## 根据因子需求构造 RQData 上下文
-
-`get_defined_factor_periods()` 汇总当前仍存活的全部因子表达式节点。上下文构造函数
-不会自动读取该结果，应用可以选择是否把它作为历史和未来扩展量：
-
-```python
-from xqfactor import get_defined_factor_periods
-from xqfactor.providers.rqdata import RQDataContextBuilder
-
-
 periods = get_defined_factor_periods()
-context_builder = RQDataContextBuilder()
-rqdata_context = context_builder.build(
-    start_date="2025-01-01",
-    end_date="2025-06-30",
-    universe=("000001.XSHE", "600000.XSHG"),
-    market="cn",
-    type="stock",
-    frequency="D",
+context = EvaluationContextBuilder(RQDataTradingCalendar()).build(
+    start_date="2026-07-20",
+    end_date="2026-07-22",
+    universe=(
+        "600519.XSHG",
+        "0700.HK",
+        "000660.KS",
+        "SKHY.nasdaq",
+        "ETH.binance",
+    ),
+    primary_exchange="XSHG",
+    frequency="min",
     history_period=periods.max_history,
     future_period=periods.max_future,
 )
-result = FORWARD_RETURNS.evaluate(rqdata_context, cache)
 ```
 
-`history_period` 和 `future_period` 均按目标频率的 bar 数计算。当前支持中国股票
-`D`、`min`、`W-SUN` 和 `ME`；分钟轴包含每个交易日的 09:31—11:30、
-13:01—15:00，周频和月频分别使用每周、每月的最后交易日。
+若显式指定 `history_period=30`、`future_period=5`，完整轴从
+`2026-07-17 14:31+08:00` 到 `2026-07-23 09:35+08:00`，
+`previous_time` 为 `2026-07-17 14:30+08:00`。输出切片只包含 7 月 20—22 日
+三个 XSHG 交易日的 720 个分钟 bar。
 
-## 固定公共类因子
+## 定义混合市场 CLOSE
 
-`FIX` 在目标资产的单标的上下文中计算因子，再将结果从 `(时间数, 1)` 广播为当前
-universe 的 `(时间数, 资产数)`，适合指数或基准收益等公共类因子：
+下面示例假定应用已经实现三个来源函数。每个函数返回：
+
+- index：原始 bar 真正完成或数据可得的带时区时刻；
+- columns：传入资产；
+- values：对应时刻已经可得的收盘/最新价格。
+
+RQData 或 Binance 若使用开始时刻标记 bar，resolver 必须先改成 API 返回的实际
+close time。
 
 ```python
-from xqfactor import FIX
+from collections.abc import Sequence
+
+import pandas as pd
+
+from xqfactor import (
+    LeafFactor,
+    LeafRequest,
+    align_latest_observations,
+)
 
 
-CSI500_RETURNS = FIX(RETURNS, "000985.XSHG")
-EXCESS_RETURNS = RETURNS - CSI500_RETURNS
-excess_returns = EXCESS_RETURNS.evaluate(context, cache)
+def load_rqdata_close_observations(
+    assets: Sequence[str],
+    request: LeafRequest,
+) -> pd.DataFrame:
+    """读取中国、香港资产的已完成价格观测。
+
+    输入：由 rqdatac-cached 负责的资产及叶子请求。
+    输出：index 为实际可得时刻、columns 为 assets 的 DataFrame。
+    """
+    ...
+
+
+def load_schwab_close_observations(
+    assets: Sequence[str],
+    request: LeafRequest,
+) -> pd.DataFrame:
+    """读取美国资产常规交易时段的已完成价格观测。
+
+    输入：由 Schwab API 负责的资产及叶子请求。
+    输出：index 为实际可得时刻、columns 为 assets 的 DataFrame。
+    """
+    ...
+
+
+def load_korea_close_observations(
+    assets: Sequence[str],
+    request: LeafRequest,
+) -> pd.DataFrame:
+    """读取韩国资产已完成的正式收盘观测。
+
+    输入：由应用选定韩国行情源负责的资产及叶子请求。
+    输出：index 为实际可得时刻、columns 为 assets 的 DataFrame。
+    """
+    ...
+
+
+def load_binance_close_observations(
+    assets: Sequence[str],
+    request: LeafRequest,
+) -> pd.DataFrame:
+    """读取加密资产已完成 Kline 的收盘观测。
+
+    输入：由 Binance API 负责的资产及叶子请求。
+    输出：index 使用 Kline close time、columns 为 assets 的 DataFrame。
+    """
+    ...
+
+
+def load_mixed_market_close(request: LeafRequest) -> pd.DataFrame:
+    """按资产路由 API，并对齐到主交易所右闭周期。
+
+    输入：包含混合市场 universe 和完整主时钟的叶子请求。
+    输出：形状为 ``(主时钟数, 资产数)``，columns 恢复原始 universe 顺序。
+    """
+    groups = {
+        "rqdata": [
+            asset
+            for asset in request.context.universe
+            if str(asset).endswith((".XSHG", ".XSHE", ".HK"))
+        ],
+        "korea": [
+            asset
+            for asset in request.context.universe
+            if str(asset).endswith(".KS")
+        ],
+        "schwab": [
+            asset
+            for asset in request.context.universe
+            if str(asset).endswith(".nasdaq")
+        ],
+        "binance": [
+            asset
+            for asset in request.context.universe
+            if str(asset).endswith(".binance")
+        ],
+    }
+
+    # ************************************************************
+    # 分组表形状分别为 (T_source, N_group)，按 columns 拼接后变为
+    # (所有来源时点并集, universe)；index 仍是各观测实际完成时刻。
+    # ************************************************************
+    frames = [
+        load_rqdata_close_observations(groups["rqdata"], request),
+        load_korea_close_observations(groups["korea"], request),
+        load_schwab_close_observations(groups["schwab"], request),
+        load_binance_close_observations(groups["binance"], request),
+    ]
+    observations = pd.concat(
+        [frame for frame in frames if not frame.empty],
+        axis=1,
+    ).sort_index()
+
+    # ************************************************************
+    # DataFrame 从 (来源观测时点数, 资产数) 转换为
+    # (主时钟数, 资产数)；每个 (period_start, time] 周期只取最后非空值。
+    # ************************************************************
+    aligned = align_latest_observations(observations, request.context)
+    return aligned.reindex(columns=request.context.universe)
+
+
+CLOSE = LeafFactor(
+    "close",
+    load_mixed_market_close,
+    definition_version="mixed-master-close-v1",
+)
 ```
 
-固定因子的缓存会区分目标资产；同一目标资产在不同当前 universe 下求值时，可以复用
-单标的子上下文中的叶子和中间结果。
+上海 15:00 日频时：
 
-## 使用 Polars 自定义算子
+- `600519.XSHG` 使用当日 15:00 收盘；
+- `0700.HK` 使用不晚于 15:00 的最后完成分钟 bar，不能读取 16:00 后正式收盘；
+- `000660.KS` 可使用 14:30 上海时间已经完成的当天正式收盘；
+- `SKHY.nasdaq` 使用该主周期内已经可得的上一常规交易时段收盘；
+- `ETH.binance` 使用不晚于 15:00 的最后完成 Kline。
 
-算子的公共输入输出仍为 Pandas DataFrame，只在这个算子内部转换到 Polars。
-算子定义不绑定 `CLOSE`，因此可应用到任意因子。
+来源休市且主周期内没有新观测时，结果为 NaN。若要无限回看旧价格，应定义口径不同的
+LeafFactor 或显式算子，不要修改 `align_latest_observations()` 的默认语义。
+
+## 组合 RETURNS、未来收益和 FIX
+
+```python
+from xqfactor import FIX, MemoryCache, PCT_CHANGE, RANK, REF
+
+
+RETURNS = PCT_CHANGE(CLOSE, 1)
+ALPHA = RANK(RETURNS) * -1
+FORWARD_RETURNS = REF(RETURNS, -1)
+CSI500_RETURNS = FIX(RETURNS, "000985.XSHG")
+EXCESS_RETURNS = RETURNS - CSI500_RETURNS
+
+assert RETURNS.required_history() == 1
+assert FORWARD_RETURNS.required_future() == 1
+
+cache = MemoryCache(maxsize=256)
+alpha = ALPHA.evaluate(context, cache)
+forward_returns = FORWARD_RETURNS.evaluate(context, cache)
+```
+
+`FIX` 只把子上下文 universe 改为目标资产，主交易所、`previous_time`、完整时间轴、
+频率和日历版本保持不变。
+
+## 自定义 Pandas 算子
 
 ```python
 import pandas as pd
-import polars as pl
 
 from xqfactor import AbstractFactor, CombinedFactor
 
 
-def polars_log1p(frame: pd.DataFrame) -> pd.DataFrame:
-    """使用 Polars 计算 log(1 + x)。
+def cross_sectional_demean(frame: pd.DataFrame) -> pd.DataFrame:
+    """计算每个时间截面的去均值结果。
 
-    输入：形状为 (时间数, 资产数) 的 Pandas DataFrame。
-    输出：形状、index 和 columns 与输入一致的 Pandas DataFrame。
+    输入：形状为 ``(时间数, 资产数)`` 的因子值。
+    输出：形状、index 和 columns 均保持不变的 DataFrame。
     """
-    index_name = frame.index.name or "datetime"
-
-    # ************************************************************
-    # DataFrame (T, N) -> Polars DataFrame (T, 1 + N)：
-    # 时间 index 临时变为普通列；计算后恢复为 DataFrame (T, N)。
-    # ************************************************************
-    polars_frame = pl.from_pandas(frame.rename_axis(index_name).reset_index())
-    transformed = polars_frame.with_columns(
-        (pl.exclude(index_name) + 1).log()
-    )
-    return transformed.to_pandas().set_index(index_name).reindex_like(frame)
+    return frame.sub(frame.mean(axis=1), axis=0)
 
 
-def POLARS_LOG1P(factor: AbstractFactor) -> CombinedFactor:
-    """将 Polars log1p 逻辑应用到任意因子。"""
-    return CombinedFactor(polars_log1p, factor)
-
-
-POLARS_LOG_CLOSE = POLARS_LOG1P(CLOSE)
-polars_result = POLARS_LOG_CLOSE.evaluate(context, cache)
+def DEMEAN(factor: AbstractFactor) -> CombinedFactor:
+    """把横截面去均值逻辑应用到任意因子。"""
+    return CombinedFactor(cross_sectional_demean, factor)
 ```
 
-## 使用 PyTorch 自定义算子
+## 在单个算子内使用 Polars 或 PyTorch
 
 ```python
 import pandas as pd
+import polars as pl
 import torch
 
 from xqfactor import AbstractFactor, CombinedFactor
 
 
-def torch_sigmoid(frame: pd.DataFrame) -> pd.DataFrame:
-    """使用 PyTorch 对因子值执行 sigmoid。
+def polars_log1p(frame: pd.DataFrame) -> pd.DataFrame:
+    """使用 Polars 计算 log(1 + x) 并恢复 Pandas 轴。"""
+    index_name = frame.index.name or "datetime"
 
-    输入：形状为 (时间数, 资产数) 的 Pandas DataFrame。
-    输出：形状、index 和 columns 与输入一致的 Pandas DataFrame。
-    """
     # ************************************************************
+    # Pandas DataFrame (T, N) -> Polars DataFrame (T, 1 + N)；
+    # 时间 index 临时变成列，计算后恢复为 Pandas DataFrame (T, N)。
+    # ************************************************************
+    value = pl.from_pandas(frame.rename_axis(index_name).reset_index())
+    transformed = value.with_columns((pl.exclude(index_name) + 1).log())
+    return transformed.to_pandas().set_index(index_name).reindex_like(frame)
+
+
+def torch_sigmoid(frame: pd.DataFrame) -> pd.DataFrame:
+    """使用 PyTorch 计算 sigmoid 并保持输入轴。"""
     # DataFrame (T, N) -> Tensor (T, N) -> DataFrame (T, N)。
-    # 时间轴和资产轴在转换前后保持不变。
-    # ************************************************************
     tensor = torch.as_tensor(frame.to_numpy(), dtype=torch.float64)
-    transformed = torch.sigmoid(tensor).numpy()
     return pd.DataFrame(
-        transformed,
+        torch.sigmoid(tensor).numpy(),
         index=frame.index,
         columns=frame.columns,
     )
 
 
+def POLARS_LOG1P(factor: AbstractFactor) -> CombinedFactor:
+    """把 Polars log1p 应用到任意因子。"""
+    return CombinedFactor(polars_log1p, factor)
+
+
 def TORCH_SIGMOID(factor: AbstractFactor) -> CombinedFactor:
-    """将 PyTorch sigmoid 逻辑应用到任意因子。"""
+    """把 PyTorch sigmoid 应用到任意因子。"""
     return CombinedFactor(torch_sigmoid, factor)
-
-
-TORCH_SIGMOID_CLOSE = TORCH_SIGMOID(CLOSE)
-torch_result = TORCH_SIGMOID_CLOSE.evaluate(context, cache)
 ```
 
-不要为 Polars 或 PyTorch 建立独立后端；新增算子时只维护该算子实际使用的实现。
-
-## 先标准化再进行 IC 检验
-
-预处理仍然输入和输出因子，因此先用 `NORM` 构造标准化因子，再把它交给 IC 检验器。
-
-```python
-from xqfactor import NORM
-from xqfactor.analysis.ic import ICAnalyzer
-
-
-raw_returns = RETURNS.evaluate(context, cache)
-forward_returns = raw_returns.shift(-1)
-NORMALIZED_RETURNS = NORM(RETURNS)
-
-ic_result = ICAnalyzer(forward_returns).analyze(
-    {"returns": NORMALIZED_RETURNS},
-    context=context,
-    cache=cache,
-)
-ic_series = ic_result.data
-ic_summary = ic_result.summary()
-normalized_returns = NORMALIZED_RETURNS.evaluate(context, cache)
-```
-
-需要先去极值再标准化时直接组合算子：
-
-```python
-from xqfactor import MAD, NORM
-
-
-PROCESSED_RETURNS = NORM(MAD(RETURNS, n=3.0))
-```
-
-## 自定义检验器
-
-继承 `AbstractAnalyzer` 并实现 `_analyze`。传入 `_analyze` 的因子已经求值为
-`dict[str, pd.DataFrame]`，不再经过 Processor。
-
-```python
-from typing import Mapping
-
-import pandas as pd
-
-from xqfactor.analysis import AbstractAnalyzer
-
-
-class CoverageAnalyzer(AbstractAnalyzer):
-    """统计每个因子的非缺失数据覆盖率。"""
-
-    def _analyze(
-        self,
-        factors: Mapping[str, pd.DataFrame],
-    ) -> pd.Series:
-        """计算全部时间和资产上的非缺失比例。
-
-        输入：名称到二维因子值的映射。
-        输出：index 为因子名、value 为覆盖率的 Series。
-        """
-        return pd.Series(
-            {
-                name: factor.notna().to_numpy().mean()
-                for name, factor in factors.items()
-            },
-            name="coverage",
-        )
-
-
-coverage = CoverageAnalyzer().analyze(
-    {
-        "returns": NORMALIZED_RETURNS,
-        "polars_log_close": POLARS_LOG_CLOSE,
-    },
-    context=context,
-    cache=cache,
-)
-```
-
-自定义检验器可以直接返回 Series、DataFrame、dataclass 或其他业务结果对象。
-本项目只内置 IC、分组收益和回归等通用检验；行业专用报告、绘图、基准归因和策略规则
-由应用项目实现。
-
-## 自定义窗口算子与缓存
+## 自定义窗口与检验
 
 ```python
 import pandas as pd
 
 from xqfactor import AbstractFactor, RollingWindowFactor
+from xqfactor.analysis.ic import ICAnalyzer
 
 
-def rolling_mean(
-    frame: pd.DataFrame,
-    window: int,
-) -> pd.DataFrame:
-    """计算时间序列移动平均。
-
-    输入：形状为 (时间数, 资产数) 的因子值和窗口长度。
-    输出：形状及轴与输入一致的移动平均 DataFrame。
-    """
+def rolling_mean(frame: pd.DataFrame, window: int) -> pd.DataFrame:
+    """沿时间轴计算窗口均值并保持输入形状。"""
     return frame.rolling(window).mean()
 
 
 def MA20(factor: AbstractFactor) -> RollingWindowFactor:
-    """将 20 期移动平均应用到任意因子。"""
+    """把 20 期均值应用到任意因子。"""
     return RollingWindowFactor(rolling_mean, 20, factor)
 
 
 MA20_CLOSE = MA20(CLOSE)
+result = ICAnalyzer(FORWARD_RETURNS).analyze(
+    {"alpha": ALPHA},
+    context=context,
+    cache=cache,
+)
 ```
 
-多个因子需要共享同一个时间窗口时，使用 `CombinedRollingWindowFactor`。回调的第一个
-参数是窗口长度，后续参数按构造函数中的因子顺序接收 DataFrame：
-
-```python
-from xqfactor import AbstractFactor, CombinedRollingWindowFactor
-
-
-def rolling_spread(
-    window: int,
-    left: pd.DataFrame,
-    right: pd.DataFrame,
-) -> pd.DataFrame:
-    """计算两个因子的滚动均值差。
-
-    输入：窗口长度，以及两个形状为 (时间数, 资产数) 的因子值。
-    输出：形状和轴与输入一致的滚动均值差 DataFrame。
-    """
-    return left.rolling(window).mean() - right.rolling(window).mean()
-
-
-def ROLLING_SPREAD(
-    left: AbstractFactor,
-    right: AbstractFactor,
-    window: int = 20,
-) -> CombinedRollingWindowFactor:
-    """将两个因子组合为指定窗口的滚动均值差。"""
-    return CombinedRollingWindowFactor(rolling_spread, window, left, right)
-
-
-ROLLING_SPREAD_CLOSE = ROLLING_SPREAD(CLOSE, RETURNS)
-```
-
-构造上下文时至少提供 19 个额外历史周期，并把 `output_start` 设置到目标输出起点。
-可以通过 `MA20_CLOSE.required_history()` 查询表达式需要的历史周期数。
-
-缓存键包含：
-
-- 因子定义和 resolver 版本；
-- 完整时间轴与输出切片；
-- universe 和 frequency；
-- semantics；
-- provider 版本。
-
-不同 universe、频率或时间区间不会共享缓存。长期全市场数据存储不属于 xqfactor。
+构造上下文时必须把表达式的 `required_history()` 和 `required_future()` 需求计入两侧
+扩展。缓存键包含因子定义以及完整主时钟身份；长期行情缓存不属于 xqfactor。

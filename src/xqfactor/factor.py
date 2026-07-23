@@ -10,7 +10,11 @@ from weakref import WeakSet
 import numpy as np
 import pandas as pd
 
-from xqfactor.context import EvaluationContext, LeafRequest
+from xqfactor.context import (
+    EVALUATION_TIMEZONE,
+    EvaluationContext,
+    LeafRequest,
+)
 from xqfactor.runtime import (
     CacheKey,
     ExecutionCache,
@@ -64,7 +68,24 @@ def _normalize_frame(
         raise ValueError("因子 DataFrame index 不能包含重复值")
     if value.columns.has_duplicates:
         raise ValueError("因子 DataFrame columns 不能包含重复值")
-    return value.reindex(index=context.time_index, columns=context.universe)
+    try:
+        value_index = pd.DatetimeIndex(value.index)
+    except (TypeError, ValueError) as error:
+        raise ValueError("因子 DataFrame index 必须是可解析的时间索引") from error
+    if value_index.tz is None:
+        raise ValueError("因子 DataFrame index 必须包含时区")
+
+    # ************************************************************
+    # 输入 DataFrame (T', N') 的 index 从来源时区转换为 Asia/Shanghai，
+    # 再对齐为 DataFrame (len(time_index), len(universe))；columns 同时
+    # 切换为 context.universe，缺失的时间或资产位置保持 NaN。
+    # ************************************************************
+    normalized = value.copy(deep=True)
+    normalized.index = value_index.tz_convert(EVALUATION_TIMEZONE)
+    return normalized.reindex(
+        index=pd.DatetimeIndex(context.time_index),
+        columns=context.universe,
+    )
 
 
 class AbstractFactor:
@@ -343,7 +364,7 @@ class FixedFactor(AbstractFactor):
         """在单标的上下文中计算因子并广播到调用方资产轴。"""
         # ************************************************************
         # 子因子从调用方 universe=(N,) 切换到固定资产 universe=(1,)，
-        # 时间轴、频率、语义、provider 版本和输出切片全部保持不变。
+        # 主时钟、首周期边界、频率、日历版本和输出切片全部保持不变。
         # ************************************************************
         fixed_context = replace(context, universe=(self.asset,))
         fixed_value = self.factor._evaluate(fixed_context, cache)

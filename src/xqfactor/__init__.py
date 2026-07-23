@@ -3,11 +3,14 @@
 from xqfactor.context import (
     AssetId,
     DateInput,
+    EVALUATION_TIMEZONE,
+    ExchangeId,
     EvaluationContext,
     EvaluationContextBuilder,
     Frequency,
     LeafRequest,
-    Market,
+    TradingCalendar,
+    align_latest_observations,
     validate_frequency,
 )
 from xqfactor.factor import (
@@ -68,11 +71,14 @@ from xqfactor.runtime import (
 __all__ = [
     "AssetId",
     "DateInput",
+    "EVALUATION_TIMEZONE",
+    "ExchangeId",
     "EvaluationContext",
     "EvaluationContextBuilder",
     "Frequency",
     "LeafRequest",
-    "Market",
+    "TradingCalendar",
+    "align_latest_observations",
     "validate_frequency",
     "AbstractFactor",
     "BinaryCombinedFactor",

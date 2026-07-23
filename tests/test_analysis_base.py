@@ -22,8 +22,17 @@ class EchoAnalyzer(AbstractAnalyzer):
 def _context() -> EvaluationContext:
     """创建检验器基类测试上下文。"""
     return EvaluationContext(
-        time_index=("t0", "t1"),
+        time_index=tuple(
+            pd.date_range(
+                "2024-01-02 15:00",
+                periods=2,
+                freq="D",
+                tz="Asia/Shanghai",
+            )
+        ),
+        previous_time="2024-01-01 15:00",
         universe=("A", "B"),
+        primary_exchange="XSHG",
         frequency="D",
     )
 

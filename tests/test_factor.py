@@ -13,14 +13,28 @@ from xqfactor import (
 )
 
 
+def _time_index(periods: int = 3) -> tuple[pd.Timestamp, ...]:
+    """构造指定长度的上海时区日频测试轴。"""
+    return tuple(
+        pd.date_range(
+            "2024-01-02 15:00",
+            periods=periods,
+            freq="D",
+            tz="Asia/Shanghai",
+        )
+    )
+
+
 def _context(
     output_start: int = 0,
     output_end: int | None = None,
 ) -> EvaluationContext:
     """构造包含历史数据的测试上下文。"""
     return EvaluationContext(
-        time_index=("t0", "t1", "t2"),
+        time_index=_time_index(),
+        previous_time="2024-01-01 15:00",
         universe=("A", "B"),
+        primary_exchange="XSHG",
         frequency="D",
         output_start=output_start,
         output_end=output_end,
@@ -62,8 +76,8 @@ def test_binary_expression_and_rank_use_dataframe_semantics() -> None:
     factor = LeafFactor("close", resolver)
     value = (RANK(factor) + 1).evaluate(_context())
 
-    assert value.loc["t0", "A"] == 1.5
-    assert value.loc["t0", "B"] == 2.0
+    assert value.loc[_time_index()[0], "A"] == 1.5
+    assert value.loc[_time_index()[0], "B"] == 2.0
 
 
 def test_ref_uses_history_and_returns_requested_slice() -> None:
@@ -80,7 +94,7 @@ def test_ref_uses_history_and_returns_requested_slice() -> None:
     factor = LeafFactor("close", resolver)
     value = REF(factor, 1).evaluate(_context(output_start=1))
 
-    assert list(value.index) == ["t1", "t2"]
+    assert list(value.index) == list(_time_index()[1:])
     assert list(value["A"]) == [1.0, 2.0]
 
 
@@ -95,8 +109,10 @@ def test_ref_negative_period_aligns_future_value_to_current_time() -> None:
         )
 
     context = EvaluationContext(
-        time_index=("t0", "t1", "t2", "t3"),
+        time_index=_time_index(4),
+        previous_time="2024-01-01 15:00",
         universe=("A",),
+        primary_exchange="XSHG",
         frequency="D",
         output_end=3,
     )
@@ -118,8 +134,10 @@ def test_forward_returns_propagate_history_and_future_requirements() -> None:
     close = LeafFactor("close", resolver)
     forward_returns = REF(PCT_CHANGE(close, 1), -1)
     context = EvaluationContext(
-        time_index=("t0", "t1", "t2", "t3", "t4"),
+        time_index=_time_index(5),
+        previous_time="2024-01-01 15:00",
         universe=("A",),
+        primary_exchange="XSHG",
         frequency="D",
         output_end=4,
     )
@@ -128,7 +146,7 @@ def test_forward_returns_propagate_history_and_future_requirements() -> None:
     assert forward_returns.required_future() == 1
     value = forward_returns.evaluate(context)
 
-    assert list(value.index) == ["t0", "t1", "t2", "t3"]
+    assert list(value.index) == list(_time_index(4))
     assert list(value["A"]) == pytest.approx([0.1, -1.0 / 11.0, 0.2, -0.25])
 
 
@@ -190,7 +208,7 @@ def test_original_nan_is_preserved() -> None:
 
     value = LeafFactor("value", resolver).evaluate(_context())
 
-    assert pd.isna(value.loc["t0", "A"])
+    assert pd.isna(value.loc[_time_index()[0], "A"])
 
 
 def test_leaf_result_is_aligned_to_context_axes() -> None:
@@ -200,16 +218,31 @@ def test_leaf_result_is_aligned_to_context_axes() -> None:
         """返回顺序不同且缺少一个资产的二维数据。"""
         return pd.DataFrame(
             [[3.0], [1.0]],
-            index=["t2", "t0"],
+            index=[_time_index()[2], _time_index()[0]],
             columns=["B"],
         )
 
     value = LeafFactor("close", resolver).evaluate(_context())
 
-    assert list(value.index) == ["t0", "t1", "t2"]
+    assert list(value.index) == list(_time_index())
     assert list(value.columns) == ["A", "B"]
-    assert pd.isna(value.loc["t1", "B"])
-    assert value.loc["t2", "B"] == 3.0
+    assert pd.isna(value.loc[_time_index()[1], "B"])
+    assert value.loc[_time_index()[2], "B"] == 3.0
+
+
+def test_leaf_result_rejects_naive_time_index() -> None:
+    """叶子结果缺少时区时应明确报错，避免重索引后静默变为全 NaN。"""
+
+    def resolver(request: LeafRequest) -> pd.DataFrame:
+        """返回与主时钟绝对时刻相同但缺少时区的二维数据。"""
+        return pd.DataFrame(
+            1.0,
+            index=pd.DatetimeIndex(request.context.time_index).tz_localize(None),
+            columns=request.context.universe,
+        )
+
+    with pytest.raises(ValueError, match="必须包含时区"):
+        LeafFactor("close", resolver).evaluate(_context())
 
 
 def test_fix_uses_single_asset_context_and_broadcasts() -> None:
@@ -229,7 +262,7 @@ def test_fix_uses_single_asset_context_and_broadcasts() -> None:
 
     assert requested_universes == [("INDEX",)]
     assert list(value.columns) == ["A", "B"]
-    assert value.loc["t1", "A"] == value.loc["t1", "B"] == 11.0
+    assert value.loc[_time_index()[1], "A"] == value.loc[_time_index()[1], "B"] == 11.0
 
 
 def test_fix_preserves_expression_history_and_cross_sectional_semantics() -> None:
@@ -252,7 +285,11 @@ def test_fix_preserves_expression_history_and_cross_sectional_semantics() -> Non
 
     assert fixed_return.required_history() == 1
     assert list(return_value["A"]) == pytest.approx([0.2, 0.25])
-    assert rank_value.loc["t0", "A"] == rank_value.loc["t0", "B"] == 1.0
+    assert (
+        rank_value.loc[_time_index()[0], "A"]
+        == rank_value.loc[_time_index()[0], "B"]
+        == 1.0
+    )
 
 
 def test_fix_reuses_single_asset_cache_across_current_universes() -> None:
@@ -272,8 +309,10 @@ def test_fix_reuses_single_asset_cache_across_current_universes() -> None:
     def context_with_universe(*universe: str) -> EvaluationContext:
         """创建指定当前资产池的测试上下文。"""
         return EvaluationContext(
-            time_index=("t0", "t1", "t2"),
+            time_index=_time_index(),
+            previous_time="2024-01-01 15:00",
             universe=universe,
+            primary_exchange="XSHG",
             frequency="D",
         )
 
